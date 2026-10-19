@@ -16,7 +16,7 @@ mirror:
     GIT_DEPTH: "0"
     UPSTREAM: https://github.com/workrr-trust/ledger.git
   script:
-    - apt-get update -qq && apt-get install -y -qq jq >/dev/null
+    - apt-get update -qq && apt-get install -y -qq jq openssh-client >/dev/null
     - git fetch --quiet "$UPSTREAM" main
     - upstream=$(git rev-parse FETCH_HEAD)
     - |
@@ -30,6 +30,13 @@ mirror:
     - git -c advice.detachedHead=false checkout --quiet "$upstream"
     - (cd tools/ckpt && CGO_ENABLED=0 go build -o /tmp/ckpt .)
     - /tmp/ckpt consistent /tmp/ours.txt /tmp/theirs.txt
-    # A project access token (role Maintainer, scope write_repository) in the
-    # masked variable MIRROR_PUSH_TOKEN; no --force, and main is protected.
-    - git push "https://mirror:${MIRROR_PUSH_TOKEN}@gitlab.com/${CI_PROJECT_PATH}.git" "$upstream:refs/heads/main"
+    # Push with a project-scoped deploy key (write access) whose private key is in
+    # the masked, protected variable MIRROR_DEPLOY_KEY as one base64 line. Project
+    # access tokens need GitLab Premium; deploy keys are free and scoped to this
+    # project only. gitlab.com's host key is pinned (fingerprint
+    # SHA256:eUXGGm1YGsMAS7vkcx6JOJdOGHPem5gQp4taiCfCLB8, per docs.gitlab.com).
+    # No --force, and main is protected with force push off.
+    - install -d -m 700 ~/.ssh
+    - printf '%s' "$MIRROR_DEPLOY_KEY" | base64 -d > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+    - echo "gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf" > ~/.ssh/known_hosts
+    - git push "git@gitlab.com:${CI_PROJECT_PATH}.git" "$upstream:refs/heads/main"

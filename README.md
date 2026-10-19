@@ -136,10 +136,13 @@ evidence. These steps need accounts Workrr has to create by hand:
    **Public**. This is a one-time import. The sync job keeps it current.
 4. **Settings → Repository → Protected branches**: `main`, Allowed to merge = Maintainers,
    Allowed to push and merge = Maintainers, **Allowed to force push = off**.
-5. **Settings → Access tokens**: create a project access token named `mirror`, role
-   **Maintainer**, scope **`write_repository`**, with the longest expiry allowed. Then
-   **Settings → CI/CD → Variables**: add `MIRROR_PUSH_TOKEN` with that value,
-   **Masked** and **Protected**.
+5. **Deploy key** (free; project access tokens need Premium). On your machine:
+   `ssh-keygen -t ed25519 -N "" -C gitlab-ledger-mirror -f ~/.ssh/workrr-ledger-mirror`.
+   **Settings → Repository → Deploy keys**: add the `.pub` key as `mirror` with
+   **Grant write permissions**. In **Protected branches**, add the `mirror` deploy key to
+   "Allowed to push and merge" for `main`. **Settings → CI/CD → Variables**: add
+   `MIRROR_DEPLOY_KEY` = `base64 -i ~/.ssh/workrr-ledger-mirror | tr -d '\n'`,
+   **Masked** and **Protected**. Then delete both local key files.
 6. **Settings → CI/CD → General pipelines → CI/CD configuration file**:
    `mirror/gitlab-ci.yml`.
 7. **Build → Pipeline schedules → New schedule**: `0 */6 * * *`, target branch `main`.
