@@ -1,0 +1,75 @@
+# Daily anchor: timestamp the latest witnessed Rekor checkpoint with OpenTimestamps
+# (aggregated into a Bitcoin transaction by the public calendars; no wallet, no
+# token, no cost). Each day's checkpoint is copied to anchors/<date>.checkpoint.txt
+# and its proof is anchors/<date>.checkpoint.txt.ots.
+#
+# A fresh proof is "pending" until a calendar's Bitcoin transaction confirms
+# (a few hours), so each run first upgrades earlier proofs to full Bitcoin
+# attestations. Then it asks Software Heritage to archive the ledger.
+name: anchor
+
+on:
+  schedule:
+    - cron: "41 0 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ledger-write
+  cancel-in-progress: false
+
+jobs:
+  anchor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the OpenTimestamps client (hash-pinned)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ots"
+          "$RUNNER_TEMP/ots/bin/pip" install --quiet --require-hashes -r tools/ots/requirements.txt
+          echo "$RUNNER_TEMP/ots/bin" >>"$GITHUB_PATH"
+      - name: Upgrade pending proofs
+        run: |
+          shopt -s nullglob
+          for f in anchors/*.ots; do
+            # Exits non-zero while still pending; that is expected.
+            ots upgrade "$f" || true
+          done
+          rm -f anchors/*.bak
+      - name: Stamp today's checkpoint
+        run: |
+          day=$(date -u +%Y-%m-%d)
+          out="anchors/$day.checkpoint.txt"
+          if [ -e "$out.ots" ]; then
+            echo "Already stamped today."
+            exit 0
+          fi
+          mkdir -p anchors
+          cp checkpoints/rekor.sigstore.dev/latest.txt "$out"
+          ots stamp "$out"
+          echo "sha256 $(sha256sum "$out" | cut -d' ' -f1)  $out"
+      - name: Commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t changed < <(git status --porcelain --untracked-files=all -- anchors | sed 's/^...//')
+          if [ ${#changed[@]} -eq 0 ]; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          printf '%s\n' "${changed[@]}"
+          bash scripts/commit.sh "anchor: OpenTimestamps $(date -u +%Y-%m-%d)" "${changed[@]}"
+      - name: Ask Software Heritage to archive the ledger
+        # Best effort: anonymous Save Code Now, rate-limited; SWH also crawls on its own.
+        continue-on-error: true
+        env:
+          ORIGIN: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          curl -fsS -X POST "https://archive.softwareheritage.org/api/1/origin/save/git/url/$ORIGIN/" |
+            jq '{save_request_status, save_task_status, origin_url}'

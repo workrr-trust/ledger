@@ -1,0 +1,105 @@
+# Self-witnessing of public Rekor until Sigstore ships public witnessing.
+#
+# Every hour: fetch the latest signed checkpoint of rekor.sigstore.dev, prove it is
+# append-only relative to the checkpoint we committed last time, and commit it.
+# The proof is checked twice, by two independent implementations: Sigstore's
+# rekor-monitor (pinned by commit) and this repo's tools/ckpt. Anyone can re-check
+# the whole committed chain later with `ckpt chain` (see README).
+#
+# We run rekor-monitor directly instead of its reusable workflow because that
+# workflow keeps the previous checkpoint in a 14-day Actions artifact; here the
+# previous checkpoint is the one in git, mirrored and archived.
+name: monitor
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ledger-write
+  cancel-in-progress: false
+
+env:
+  # sigstore/rekor-monitor main @ 2026-10-19 (the project publishes no tags).
+  REKOR_MONITOR_SHA: 47017b2379cb3452271ce0cc1e33d05f61c5e275
+  LOG_DIR: checkpoints/rekor.sigstore.dev
+
+jobs:
+  monitor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write # commit the checkpoint (via the API, so GitHub signs it)
+      issues: write # open an issue if the log looks inconsistent
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sigstore/rekor-monitor
+          ref: ${{ env.REKOR_MONITOR_SHA }}
+          path: .rekor-monitor
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tools/ckpt/go.mod
+          cache-dependency-path: |
+            .rekor-monitor/go.sum
+            tools/ckpt/go.sum
+      - name: Build rekor-monitor and ckpt
+        run: |
+          (cd .rekor-monitor && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/rekor_monitor" ./cmd/rekor_monitor)
+          (cd tools/ckpt && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/ckpt" .)
+      - name: Fetch and verify the latest checkpoint
+        id: check
+        run: |
+          prev="$RUNNER_TEMP/prev.txt" new="$RUNNER_TEMP/new.txt"
+          cp "$LOG_DIR/latest.txt" "$prev"
+          cp "$LOG_DIR/latest.txt" "$new"
+          # rekor-monitor: verifies the new checkpoint's signature and a consistency
+          # proof from the stored one, then overwrites the file with the new one.
+          "$RUNNER_TEMP/rekor_monitor" --once --file "$new" \
+            --user-agent "workrr-trust-ledger/$GITHUB_RUN_ID"
+          # Independent second check of the same pair.
+          "$RUNNER_TEMP/ckpt" consistent "$prev" "$new"
+          if cmp -s "$prev" "$new"; then
+            echo "Log has not grown since the last checkpoint."
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          size=$("$RUNNER_TEMP/ckpt" show "$new" | cut -f2)
+          month=$(date -u +%Y-%m)
+          mkdir -p "$LOG_DIR/history"
+          cp "$new" "$LOG_DIR/latest.txt"
+          printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(cat "$new")" >>"$LOG_DIR/history/$month.txt"
+          {
+            echo "changed=true"
+            echo "size=$size"
+            echo "history=$LOG_DIR/history/$month.txt"
+          } >>"$GITHUB_OUTPUT"
+      - name: Commit
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIZE: ${{ steps.check.outputs.size }}
+          HISTORY: ${{ steps.check.outputs.history }}
+        run: |
+          bash scripts/commit.sh "checkpoint: rekor.sigstore.dev tree size $SIZE" "$LOG_DIR/latest.txt" "$HISTORY"
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create monitor-failure --color B60205 --description "Rekor monitor failed" 2>/dev/null || true
+          if [ -z "$(gh issue list --label monitor-failure --state open --json number --jq '.[].number')" ]; then
+            gh issue create --label monitor-failure \
+              --title "Rekor monitor failed" \
+              --body "The checkpoint monitor failed: $RUN_URL. A network error is the usual cause. A signature or consistency failure means the public Rekor log may have shown inconsistent histories; do not overwrite \`$LOG_DIR/latest.txt\` until that is understood."
+          else
+            echo "An open monitor-failure issue already exists."
+          fi

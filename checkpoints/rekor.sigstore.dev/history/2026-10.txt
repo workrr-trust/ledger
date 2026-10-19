@@ -1,0 +1,3 @@
+# rekor.sigstore.dev checkpoints witnessed by workrr-trust/ledger, one per line: <time observed, UTC> <signed note, newlines escaped>.
+# Genesis: the inclusion checkpoint inside the first certificate (Rekor log index 3325986274), integrated 2026-10-19T20:19:15Z.
+2026-10-19T20:19:15Z rekor.sigstore.dev - 1193050959916656506\n3204082608\nNZN6hWE8ou7GDwYKph6Ohz2mCjbn7tdVPqzRcoG4n/A=\n\n— rekor.sigstore.dev wNI9ajBFAiEA7szfq9OQnDbvaqhqNpqdYDMkjMCk4UttvRViaqiLKycCIEJcugnD0REVyv2CpR3uctO0gRQA58i0Q/DPLJDYvAyV\n

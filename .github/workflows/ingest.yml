@@ -1,0 +1,170 @@
+# Index a Workrr certificate. Anyone can submit (an issue from the "Submit a
+# certificate" form, or a maintainer's workflow_dispatch) and nobody needs write
+# access: a submission is only a pointer (repo + digest). The ledger fetches the
+# bundle from GitHub's public attestation store and verifies it independently
+# (scripts/ingest.sh) before committing. The certifier holds no ledger credential.
+#
+# Jobs are split by privilege: `verify` handles untrusted input and fetches the
+# untrusted source repo with a read-only token; only `commit` can write, and it
+# only copies files that `verify` produced under certificates/sha256/.
+name: ingest
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: GitHub repo that ran the certifier (owner/repo)
+        required: true
+      digest:
+        description: Artifact digest (sha256:<hex>)
+        required: true
+
+permissions: {}
+
+env:
+  # workrr-trust/certify v0.1.0
+  CERTIFY_SHA: edf382958dd7ce070db0ed13af1cc8c31a150901
+
+jobs:
+  verify:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.issue.labels.*.name, 'certificate')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      count: ${{ steps.ingest.outputs.count }}
+      repository: ${{ steps.input.outputs.repository }}
+      digest: ${{ steps.input.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: workrr-trust/certify
+          ref: ${{ env.CERTIFY_SHA }}
+          path: .certify
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tools/ckpt/go.mod
+          cache-dependency-path: |
+            .certify/go/go.sum
+            tools/ckpt/go.sum
+      - name: Build workrr and ckpt
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          (cd .certify/go && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/bin/workrr" ./cmd/workrr)
+          (cd tools/ckpt && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/bin/ckpt" .)
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      - name: Read submission
+        id: input
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_REPO: ${{ inputs.repository }}
+          IN_DIGEST: ${{ inputs.digest }}
+        run: |
+          if [ "$EVENT" = issues ]; then
+            # Issue-form body: "### Repository\n\n<value>\n\n### Artifact digest\n\n<value>"
+            field() { jq -r '.issue.body // ""' "$GITHUB_EVENT_PATH" | tr -d '\r' |
+              awk -v h="### $1" '$0 == h { getline; getline; print; exit }' | tr -d '[:space:]`'; }
+            IN_REPO=$(field Repository)
+            IN_DIGEST=$(field "Artifact digest")
+          fi
+          IN_REPO=${IN_REPO#https://github.com/}
+          # Validated again in ingest.sh; only safe values leave this step.
+          [[ $IN_REPO =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$ ]] || IN_REPO=invalid
+          [[ $IN_DIGEST =~ ^(sha256:)?[0-9a-f]{64}$ ]] || IN_DIGEST=invalid
+          echo "repository=$IN_REPO" >>"$GITHUB_OUTPUT"
+          echo "digest=sha256:${IN_DIGEST#sha256:}" >>"$GITHUB_OUTPUT"
+      - name: Verify
+        id: ingest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ steps.input.outputs.repository }}
+          DIGEST: ${{ steps.input.outputs.digest }}
+        run: |
+          out="$RUNNER_TEMP/out"
+          status=0
+          bash scripts/ingest.sh "$REPO" "$DIGEST" "$out" || status=$?
+          echo "count=$(cat "$out/count" 2>/dev/null || echo 0)" >>"$GITHUB_OUTPUT"
+          cat "$out/summary.md" >>"$GITHUB_STEP_SUMMARY"
+          exit $status
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: ingest
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  commit:
+    needs: verify
+    if: needs.verify.outputs.count != '' && needs.verify.outputs.count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ingest
+          path: ${{ runner.temp }}/out
+      - name: Commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ needs.verify.outputs.repository }}
+          DIGEST: ${{ needs.verify.outputs.digest }}
+        run: |
+          cd "$RUNNER_TEMP/out"
+          mapfile -t files < <(find certificates -type f | sort)
+          cd "$GITHUB_WORKSPACE"
+          for f in "${files[@]}"; do
+            [[ $f =~ ^certificates/sha256/[0-9a-f]{64}/[0-9]{1,20}\.sigstore\.json$ ]] || { echo "unexpected path $f"; exit 1; }
+            [ ! -e "$f" ] || { echo "already indexed: $f"; continue; }
+            mkdir -p "$(dirname "$f")"
+            cp "$RUNNER_TEMP/out/$f" "$f"
+            new+=("$f")
+          done
+          [ ${#new[@]} -gt 0 ] || { echo "Nothing new."; exit 0; }
+          COMMIT_BODY="$(cat "$RUNNER_TEMP/out/summary.md")" \
+            bash scripts/commit.sh "certificate: $REPO $DIGEST" "${new[@]}"
+
+  report:
+    needs: [verify, commit]
+    if: always() && github.event_name == 'issues' && needs.verify.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: ingest
+          path: ${{ runner.temp }}/out
+      - name: Reply and close
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          VERIFY: ${{ needs.verify.result }}
+          COMMIT: ${{ needs.commit.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          summary=$(cat "$RUNNER_TEMP/out/summary.md" 2>/dev/null || echo "- ✗ verification did not produce a summary")
+          if [ "$VERIFY" = success ] && [ "$COMMIT" != failure ]; then
+            verdict="Verified. Indexed certificates are listed below; nothing new is committed for certificates already in the ledger."
+            reason=completed
+          else
+            verdict="Not indexed. Check the repository and digest (it is the \`subject-digest\` the certifier printed) and resubmit."
+            reason="not planned"
+          fi
+          printf '%s\n\n%s\n\n[Run log](%s)\n' "$verdict" "$summary" "$RUN_URL" | gh issue comment "$ISSUE" --body-file -
+          gh issue close "$ISSUE" --reason "$reason"

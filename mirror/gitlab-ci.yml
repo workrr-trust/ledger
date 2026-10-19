@@ -1,0 +1,35 @@
+# GitLab mirror of workrr-trust/ledger, run by GitLab (not GitHub) on a schedule.
+# Point the GitLab project at this file: Settings → CI/CD → General pipelines →
+# CI/CD configuration file = mirror/gitlab-ci.yml. See README "Mirrors".
+#
+# It is a witness, not a copy: it only fast-forwards. If GitHub's history was
+# rewritten, the job fails and the GitLab copy keeps the old history as evidence.
+# It also re-checks, on GitLab's infrastructure, that the newest committed Rekor
+# checkpoint is consistent with the one GitLab already holds.
+#
+# Status: written before the GitLab project exists; untested until then.
+mirror:
+  image: golang:1.25
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"
+  variables:
+    GIT_DEPTH: "0"
+    UPSTREAM: https://github.com/workrr-trust/ledger.git
+  script:
+    - apt-get update -qq && apt-get install -y -qq jq >/dev/null
+    - git fetch --quiet "$UPSTREAM" main
+    - upstream=$(git rev-parse FETCH_HEAD)
+    - |
+      if [ "$upstream" = "$CI_COMMIT_SHA" ]; then echo "Up to date."; exit 0; fi
+      if ! git merge-base --is-ancestor "$CI_COMMIT_SHA" "$upstream"; then
+        echo "GitHub main ($upstream) does not contain our main ($CI_COMMIT_SHA): history was rewritten. Not mirroring."
+        exit 1
+      fi
+    - git show "$CI_COMMIT_SHA:checkpoints/rekor.sigstore.dev/latest.txt" >/tmp/ours.txt
+    - git show "$upstream:checkpoints/rekor.sigstore.dev/latest.txt" >/tmp/theirs.txt
+    - git -c advice.detachedHead=false checkout --quiet "$upstream"
+    - (cd tools/ckpt && CGO_ENABLED=0 go build -o /tmp/ckpt .)
+    - /tmp/ckpt consistent /tmp/ours.txt /tmp/theirs.txt
+    # A project access token (role Maintainer, scope write_repository) in the
+    # masked variable MIRROR_PUSH_TOKEN; no --force, and main is protected.
+    - git push "https://mirror:${MIRROR_PUSH_TOKEN}@gitlab.com/${CI_PROJECT_PATH}.git" "$upstream:refs/heads/main"
