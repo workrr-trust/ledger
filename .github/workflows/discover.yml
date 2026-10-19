@@ -1,0 +1,66 @@
+# Index new Workrr certificates without anyone submitting them. Pull-based, so the
+# certifier (certify.yml, whose path is its signing identity) needs no change and
+# holds no ledger credential.
+#
+# `discover` lists recent `workrr-certificate` artifacts in the watched repos
+# (sources.txt + repos already in the ledger), reads their digests, and keeps the
+# ones whose attestations aren't indexed yet. Each one then goes through the same
+# ingest workflow as a submission, which verifies it from scratch.
+name: discover
+
+on:
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Look back this many days (artifacts expire after the source repo's retention, 90 days by default)
+        default: "3"
+
+permissions: {}
+
+concurrency:
+  group: discover
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      pairs: ${{ steps.find.outputs.pairs }}
+      count: ${{ steps.find.outputs.count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Find unindexed certificates
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAYS: ${{ inputs.days || '3' }}
+        run: |
+          set -o pipefail
+          [[ $DAYS =~ ^[0-9]{1,3}$ ]] || { echo "days must be a number"; exit 1; }
+          bash scripts/discover.sh "$DAYS" "$RUNNER_TEMP/pairs.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "pairs=$(jq -c . "$RUNNER_TEMP/pairs.json")" >>"$GITHUB_OUTPUT"
+          echo "count=$(jq length "$RUNNER_TEMP/pairs.json")" >>"$GITHUB_OUTPUT"
+
+  ingest:
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    strategy:
+      matrix:
+        include: ${{ fromJSON(needs.discover.outputs.pairs) }}
+      max-parallel: 1
+      fail-fast: false
+    # The ceiling for ingest.yml's jobs: verify reads, commit writes contents.
+    # issues: write is only used by its report job, which runs for issue submissions.
+    permissions:
+      contents: write
+      issues: write
+    uses: ./.github/workflows/ingest.yml
+    with:
+      repository: ${{ matrix.repository }}
+      digest: ${{ matrix.digest }}

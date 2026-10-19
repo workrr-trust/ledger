@@ -1,5 +1,6 @@
 # Index a Workrr certificate. Anyone can submit (an issue from the "Submit a
-# certificate" form, or a maintainer's workflow_dispatch) and nobody needs write
+# certificate" form, a maintainer's workflow_dispatch, or the scheduled discover
+# workflow, which calls this one) and nobody needs write
 # access: a submission is only a pointer (repo + digest). The ledger fetches the
 # bundle from GitHub's public attestation store and verifies it independently
 # (scripts/ingest.sh) before committing. The certifier holds no ledger credential.
@@ -20,6 +21,14 @@ on:
       digest:
         description: Artifact digest (sha256:<hex>)
         required: true
+  workflow_call:
+    inputs:
+      repository:
+        type: string
+        required: true
+      digest:
+        type: string
+        required: true
 
 permissions: {}
 
@@ -29,7 +38,7 @@ env:
 
 jobs:
   verify:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.issue.labels.*.name, 'certificate')
+    if: github.event_name != 'issues' || contains(github.event.issue.labels.*.name, 'certificate')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -38,6 +47,7 @@ jobs:
       count: ${{ steps.ingest.outputs.count }}
       repository: ${{ steps.input.outputs.repository }}
       digest: ${{ steps.input.outputs.digest }}
+      artifact: ${{ steps.input.outputs.artifact }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,6 +90,8 @@ jobs:
           [[ $IN_DIGEST =~ ^(sha256:)?[0-9a-f]{64}$ ]] || IN_DIGEST=invalid
           echo "repository=$IN_REPO" >>"$GITHUB_OUTPUT"
           echo "digest=sha256:${IN_DIGEST#sha256:}" >>"$GITHUB_OUTPUT"
+          # Unique per submission: discover runs several ingests in one workflow run.
+          echo "artifact=ingest-${IN_REPO//\//_}-${IN_DIGEST: -16}" >>"$GITHUB_OUTPUT"
       - name: Verify
         id: ingest
         env:
@@ -96,7 +108,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: ingest
+          name: ${{ steps.input.outputs.artifact || 'ingest' }}
           path: ${{ runner.temp }}/out/
           if-no-files-found: ignore
           retention-days: 7
@@ -114,7 +126,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: ingest
+          name: ${{ needs.verify.outputs.artifact || 'ingest' }}
           path: ${{ runner.temp }}/out
       - name: Commit
         env:
@@ -147,7 +159,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
-          name: ingest
+          name: ${{ needs.verify.outputs.artifact || 'ingest' }}
           path: ${{ runner.temp }}/out
       - name: Reply and close
         env:

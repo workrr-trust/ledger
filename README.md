@@ -22,8 +22,9 @@ any single host. The design is in
 | `checkpoints/rekor.sigstore.dev/history/YYYY-MM.txt` | Every checkpoint we have committed, oldest first, as `<time observed, UTC> <checkpoint>`. Each one is proven consistent with the one before it. The chain starts at the inclusion checkpoint of the first certificate. |
 | `anchors/YYYY-MM-DD.checkpoint.txt` + `.ots` | That day's latest checkpoint and its [OpenTimestamps](https://opentimestamps.org) proof, anchored in Bitcoin. |
 | `tools/ckpt/` | A small Go tool that verifies checkpoint signatures (against the Rekor key in Sigstore's trusted root) and consistency proofs (fetched from Rekor, checked locally). |
-| `scripts/` | `audit.sh` (check everything), `ingest.sh` (verify a submission), `commit.sh` (signed commits through the GitHub API). |
-| `.github/workflows/` | `monitor` (hourly), `anchor` (daily), `ingest` (on submission). |
+| `sources.txt` | Repos the ledger watches for new certificates (opt-in, by pull request). |
+| `scripts/` | `audit.sh` (check everything), `discover.sh` (find unindexed certificates), `ingest.sh` (verify one repo + digest), `commit.sh` (signed commits through the GitHub API). |
+| `.github/workflows/` | `monitor` (hourly), `anchor` (daily), `discover` (hourly), `ingest` (per submission or discovery). |
 | `mirror/gitlab-ci.yml` | The GitLab mirror's fast-forward-only sync job. |
 
 ## Audit it
@@ -33,7 +34,7 @@ Everything below needs only `git`, `go` (1.25+), and `jq`, and talks only to Git
 
 ```sh
 git clone https://github.com/workrr-trust/ledger && cd ledger
-bash scripts/audit.sh
+MIRRORS="https://gitlab.com/workrr-trust/ledger.git" bash scripts/audit.sh
 ```
 
 `audit.sh` builds `tools/ckpt` and the `workrr` CLI at the pinned certifier release
@@ -84,7 +85,13 @@ signed commits.
 
 Nobody needs write access, including the certifier. A submission is only a pointer.
 
-- Open an issue with the [**Submit a certificate**](../../issues/new?template=submit-certificate.yml)
+- **Automatically.** The hourly `discover` workflow watches every repo in
+  [`sources.txt`](sources.txt) and every repo that already has a certificate here. It
+  lists the `workrr-certificate` artifacts the certifier uploaded in the last 3 days,
+  reads their digests, and checks GitHub's attestation store for Workrr certificates not
+  yet indexed. Each new repo + digest goes through `ingest` below. To be watched, add your
+  repo to `sources.txt` by pull request, or submit your first certificate by issue.
+- Or open an issue with the [**Submit a certificate**](../../issues/new?template=submit-certificate.yml)
   form (repo + artifact digest). Maintainers can also run the `ingest` workflow by hand.
 - The `ingest` workflow fetches the certificate bundles for that digest from GitHub's
   public attestation store (`GET /repos/{repo}/attestations/sha256:{digest}`), where the
@@ -98,6 +105,25 @@ Nobody needs write access, including the certifier. A submission is only a point
 
 Bundles are self-verifying, so a malicious submitter can't get anything indexed that the
 certifier didn't sign. At worst they waste a CI run.
+
+Why discovery is pull-based, and why it reads a watch list instead of searching:
+
+- The certifier's workflow path (`certify.yml`) is its signing identity, so it stays
+  unchanged and holds no ledger credential. A push from it would need a new certifier
+  release and a write token in every user's repo.
+- GitHub code search would find callers of `certify.yml` without a list, but the ledger
+  would have to hold a personal token as a secret (code search isn't reliably available
+  to the workflow's `GITHUB_TOKEN`), it skips forks, and new repos can
+  take a long time to be indexed (`workrr-trust/sample-skills` wasn't, on the day it
+  issued the first certificate). The ledger would then hold a personal secret and still
+  miss certificates. A list in git is reviewable and needs no secret.
+- Neither GitHub nor Rekor can list attestations by signer, so the artifact is how
+  discovery learns a digest. It's untrusted and only used for that: the bundle that gets
+  indexed comes from the attestation store and passes every `ingest` check. An artifact
+  expires with its repo's retention (90 days by default); run `discover` by hand with a
+  larger `days` to backfill, or submit by issue.
+- A certificate that fails verification is retried while its artifact is in the window,
+  and never indexed.
 
 ## Self-witnessing Rekor
 
@@ -147,8 +173,9 @@ evidence. These steps need accounts Workrr has to create by hand:
    `mirror/gitlab-ci.yml`.
 7. **Build → Pipeline schedules → New schedule**: `0 */6 * * *`, target branch `main`.
    Run it once by hand and check it goes green.
-8. Add `https://gitlab.com/workrr-trust/ledger.git` to `MIRRORS` in this README's audit
-   example. Request a Software Heritage save for it at
+8. ✓ Done 2026-10-19: live at [gitlab.com/workrr-trust/ledger](https://gitlab.com/workrr-trust/ledger),
+   schedule green, and added to `MIRRORS` in the audit example above. A Software Heritage
+   save for it will be requested by hand (Workrr), at
    [archive.softwareheritage.org/save](https://archive.softwareheritage.org/save/).
 
 If GitHub's history were ever rewritten, the job would fail and GitLab would keep the

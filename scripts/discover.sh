@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Find new Workrr certificates without anyone submitting them.
+#
+#   scripts/discover.sh <days> <out.json>
+#
+# Watched repos: those listed in sources.txt (opt-in, by pull request) plus every
+# repo that already has a certificate in the ledger. For each one, it lists the
+# `workrr-certificate` artifacts the certifier uploaded in the last <days> days,
+# reads the artifact digest from each, and asks GitHub's attestation store which
+# Workrr certificates exist for that digest. Every repo + digest that has one not
+# yet under certificates/ goes to <out.json> as [{repository, digest}], for the
+# ingest workflow to verify from scratch.
+#
+# Discovery is permissive on purpose: the artifacts are untrusted and only used to
+# learn digests, and nothing is indexed unless scripts/ingest.sh verifies it.
+# Nothing from a watched repo is executed.
+#
+# Needs: gh (GH_TOKEN), jq, unzip. Run from the ledger root.
+set -euo pipefail
+
+days=$1
+out=$2
+predicate_type=https://trust.workrr.ai/certificate/v0.1
+repo_re='^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$'
+since=$(jq -nr --argjson d "$days" 'now - $d * 86400 | todate')
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+{
+  sed -e 's/#.*//' -e 's/[[:space:]]//g' sources.txt 2>/dev/null || true
+  for f in certificates/sha256/*/*.sigstore.json; do
+    [ -e "$f" ] || continue
+    jq -r '.dsseEnvelope.payload' "$f" | base64 -d | jq -r '.predicate.source.uri // empty'
+  done | sed 's|^https://github.com/||'
+} | awk 'NF' | sort -fu >"$work/repos"
+
+: >"$work/pairs"
+while IFS= read -r repo; do
+  [[ $repo =~ $repo_re ]] || { echo "skip: not owner/repo: $repo"; continue; }
+  if ! gh api --paginate "repos/$repo/actions/artifacts?name=workrr-certificate&per_page=100" \
+    --jq ".artifacts[] | select(.expired | not) | select(.created_at >= \"$since\") | select(.size_in_bytes < 1000000) | .id" \
+    >"$work/ids" 2>"$work/err"; then
+    echo "skip: $repo: $(head -c 200 "$work/err")"
+    continue
+  fi
+  echo "$repo: $(wc -l <"$work/ids" | tr -d ' ') certificate artifact(s) since $since"
+  while IFS= read -r id; do
+    rm -f "$work/a.zip"
+    gh api "repos/$repo/actions/artifacts/$id/zip" >"$work/a.zip" 2>/dev/null || { echo "  skip artifact $id: download failed"; continue; }
+    unzip -p "$work/a.zip" statement.json 2>/dev/null | head -c 1000000 |
+      jq -r '.subject[]?.digest.sha256 // empty' 2>/dev/null |
+      grep -E '^[0-9a-f]{64}$' | sed "s|^|$repo |" >>"$work/pairs" || true
+  done <"$work/ids"
+done <"$work/repos"
+
+: >"$work/new"
+sort -u "$work/pairs" | while read -r repo digest; do
+  if ! gh api --paginate "repos/$repo/attestations/sha256:$digest" >"$work/att.json" 2>/dev/null; then
+    echo "  $repo sha256:${digest:0:12}: not in the attestation store"
+    continue
+  fi
+  pending=0
+  for idx in $(jq -r --arg pt "$predicate_type" '.attestations[].bundle
+      | select((.dsseEnvelope.payload | @base64d | fromjson | .predicateType) == $pt)
+      | .verificationMaterial.tlogEntries[0].logIndex' "$work/att.json" 2>/dev/null | grep -E '^[0-9]{1,20}$'); do
+    if [ -e "certificates/sha256/$digest/$idx.sigstore.json" ]; then
+      echo "  $repo sha256:${digest:0:12}: Rekor $idx already indexed"
+    else
+      echo "  $repo sha256:${digest:0:12}: Rekor $idx is new"
+      pending=1
+    fi
+  done
+  [ "$pending" -eq 0 ] || echo "$repo sha256:$digest" >>"$work/new"
+done
+
+jq -Rn '[inputs | split(" ") | {repository: .[0], digest: .[1]}]' <"$work/new" >"$out"
+echo "discover: $(jq length "$out") repo+digest pair(s) to ingest"
