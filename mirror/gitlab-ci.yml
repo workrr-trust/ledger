@@ -7,7 +7,8 @@
 # It also re-checks, on GitLab's infrastructure, that the newest committed Rekor
 # checkpoint is consistent with the one GitLab already holds.
 #
-# Status: written before the GitLab project exists; untested until then.
+# Status: live at gitlab.com/workrr-trust/ledger since 2026-10-19, on a 6-hourly
+# schedule; tested and green.
 mirror:
   image: golang:1.25
   rules:
