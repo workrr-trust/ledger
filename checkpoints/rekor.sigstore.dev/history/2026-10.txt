@@ -2,3 +2,4 @@
 # Genesis: the inclusion checkpoint inside the first certificate (Rekor log index 3325986274), integrated 2026-10-19T20:19:15Z.
 2026-10-19T20:19:15Z rekor.sigstore.dev - 1193050959916656506\n3204082608\nNZN6hWE8ou7GDwYKph6Ohz2mCjbn7tdVPqzRcoG4n/A=\n\n— rekor.sigstore.dev wNI9ajBFAiEA7szfq9OQnDbvaqhqNpqdYDMkjMCk4UttvRViaqiLKycCIEJcugnD0REVyv2CpR3uctO0gRQA58i0Q/DPLJDYvAyV\n
 2026-10-19T20:38:19Z rekor.sigstore.dev - 1193050959916656506\n3204285398\nEceud33AgcKKm1Yz62ndgpEo2eeiw6hiZOKIqO++yGk=\n\n— rekor.sigstore.dev wNI9ajBFAiEA57/mSHx4XJstU1xOFL8JvOc0WY2rzRBE/v1kkkoZ8e4CIForeP+9TUXyh8BEh18MVR/Kzpz3kj0W2Jk1POf99QwA\n
+2026-10-20T00:24:06Z rekor.sigstore.dev - 1193050959916656506\n3206304197\n2PYwdvDBPcfwj2oc44xuYexk/o5CUbA3uoVRboOPgME=\n\n— rekor.sigstore.dev wNI9ajBEAiA2ISn8bdAts8dFX1Ri0APMA41tqiHWdrFrH6ggkIpcNQIgRtRhu4/LDplIBwra8DCple+TFCIOmiCwmQyEw/EEX54=\n
