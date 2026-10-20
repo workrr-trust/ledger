@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Find, verify and stage Workrr certificates for one artifact digest.
+# Find, verify and stage workrr certificates for one artifact digest.
 #
 #   scripts/ingest.sh <owner/repo> <sha256:hex> <out-dir>
 #
 # Pull, don't trust: the submitter only names a repository and a digest. The
 # Sigstore bundles come from GitHub's public attestation store for that repo, and
 # each one is indexed only if ALL of these hold:
-#   1. it is a Workrr certificate (predicateType) for exactly this digest;
+#   1. it is a workrr certificate (predicateType) for exactly this digest;
 #   2. its source is this repo, at a full commit SHA;
 #   3. `workrr verify` passes against a fresh checkout of that commit: the
 #      artifact re-hashes to the digest, the signature chains to Sigstore, the
@@ -97,7 +97,7 @@ while IFS= read -r bundle; do
   echo "- ✓ \`$dest\` — level **$level**, Rekor log index [$log_index](https://search.sigstore.dev/?logIndex=$log_index), source $uri@${commit:0:12} \`$path\`, signer \`$signer\`" >>"$out/summary.md"
 done <"$work/bundles.jsonl"
 
-[ "$found" -gt 0 ] || die "no Workrr certificates for sha256:$digest in $repo"
+[ "$found" -gt 0 ] || die "no workrr certificates for sha256:$digest in $repo"
 echo "$added" >"$out/count"
-echo "ingest: $added new of $found Workrr certificate(s) for sha256:$digest"
+echo "ingest: $added new of $found workrr certificate(s) for sha256:$digest"
 cat "$out/summary.md"

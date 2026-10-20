@@ -1,4 +1,4 @@
-# Repos the ledger watches for new Workrr certificates (scripts/discover.sh).
+# Repos the ledger watches for new workrr certificates (scripts/discover.sh).
 # One GitHub owner/repo per line. Add yours by pull request: it only tells the
 # ledger where to look, and every certificate found is verified before indexing.
 # Repos that already have a certificate in the ledger are watched without a line here.

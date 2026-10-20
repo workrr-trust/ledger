@@ -1,10 +1,10 @@
-# Workrr Trust ledger
+# workrr Trust ledger
 
-The public, append-only record of every [Workrr Trust](https://github.com/workrr-trust/certify)
+The public, append-only record of every [workrr Trust](https://github.com/workrr-trust/certify)
 certificate, plus our own witness record of the public Sigstore Rekor log that the
 certificates are logged in.
 
-**You don't have to trust this repo, or Workrr.** Every file here is checkable from
+**You don't have to trust this repo, or workrr.** Every file here is checkable from
 cryptography you get elsewhere: signatures chain to Sigstore's
 [trusted root](https://github.com/sigstore/root-signing) (distributed via TUF), each
 certificate re-verifies against its own source code, and the Rekor checkpoints are
@@ -88,14 +88,14 @@ Nobody needs write access, including the certifier. A submission is only a point
 - **Automatically.** The hourly `discover` workflow watches every repo in
   [`sources.txt`](sources.txt) and every repo that already has a certificate here. It
   lists the `workrr-certificate` artifacts the certifier uploaded in the last 3 days,
-  reads their digests, and checks GitHub's attestation store for Workrr certificates not
+  reads their digests, and checks GitHub's attestation store for workrr certificates not
   yet indexed. Each new repo + digest goes through `ingest` below. To be watched, add your
   repo to `sources.txt` by pull request, or submit your first certificate by issue.
 - Or open an issue with the [**Submit a certificate**](../../issues/new?template=submit-certificate.yml)
   form (repo + artifact digest). Maintainers can also run the `ingest` workflow by hand.
 - The `ingest` workflow fetches the certificate bundles for that digest from GitHub's
   public attestation store (`GET /repos/{repo}/attestations/sha256:{digest}`), where the
-  certifier's `actions/attest` step put them. It indexes a bundle only if it is a Workrr
+  certifier's `actions/attest` step put them. It indexes a bundle only if it is a workrr
   certificate for exactly that digest, its source is that repo, `workrr verify` passes
   against a fresh checkout of the recorded commit, and its Rekor checkpoint is
   consistent with our witnessed chain. Nothing from the source repo is executed.
@@ -143,7 +143,7 @@ through its reusable workflow because that workflow keeps the previous checkpoin
 When Sigstore ships witness cosignatures, we'll require them as well and keep this record.
 
 Not yet covered: Rekor v2 shards (`logYYYY-N.rekor.sigstore.dev`). Sigstore's signing
-config still points clients at v1, and every Workrr certificate so far is a v1 entry.
+config still points clients at v1, and every workrr certificate so far is a v1 entry.
 rekor-monitor's v2 mode will be added when certificates start landing there.
 
 ## Mirrors and archives
@@ -151,11 +151,11 @@ rekor-monitor's v2 mode will be added when certificates start landing there.
 The mirrors are a durability layer, not the source of truth. Truth is the signatures and
 proofs inside the files. Software Heritage is asked to archive the repo daily (Save Code
 Now, from `anchor`). It keeps every snapshot it takes, so even a rewritten history leaves
-evidence. These steps need accounts Workrr has to create by hand:
+evidence. These steps need accounts workrr has to create by hand:
 
 ### GitLab (an independent witness: fast-forward only)
 
-1. Create a gitlab.com account for Workrr (a role address, not a person), and turn on 2FA.
+1. Create a gitlab.com account for workrr (a role address, not a person), and turn on 2FA.
 2. Create the public group **`workrr-trust`** (gitlab.com/groups/new).
 3. New project → **Import project → Repository by URL**:
    `https://github.com/workrr-trust/ledger.git`, project name `ledger`, visibility
@@ -175,7 +175,7 @@ evidence. These steps need accounts Workrr has to create by hand:
    Run it once by hand and check it goes green.
 8. ✓ Done 2026-10-19: live at [gitlab.com/workrr-trust/ledger](https://gitlab.com/workrr-trust/ledger),
    schedule green, and added to `MIRRORS` in the audit example above. A Software Heritage
-   save for it will be requested by hand (Workrr), at
+   save for it will be requested by hand (workrr), at
    [archive.softwareheritage.org/save](https://archive.softwareheritage.org/save/).
 
 If GitHub's history were ever rewritten, the job would fail and GitLab would keep the
@@ -183,7 +183,7 @@ original.
 
 ### Codeberg (non-profit mirror; durability only)
 
-1. Create a codeberg.org account for Workrr, and turn on 2FA. Codeberg is for free and
+1. Create a codeberg.org account for workrr, and turn on 2FA. Codeberg is for free and
    open-source projects, which this is.
 2. Create the organization **`workrr-trust`** (codeberg.org/org/create), visibility public.
 3. **+ → New migration → GitHub**: URL `https://github.com/workrr-trust/ledger`, no
@@ -200,13 +200,13 @@ can't sign either: public Sigstore Fulcio doesn't trust Codeberg's OIDC issuer y
 
 ## Limits
 
-- The log proves Workrr *said* something and never changed its story. It doesn't make
+- The log proves workrr *said* something and never changed its story. It doesn't make
   the checks correct. That comes from the public certifier code, the recorded tool
   digests, and re-running the checks.
 - Revocations aren't recorded yet. A `revocations/` index and a signed trust-policy file
   arrive with certifier v0.2.
 - Our self-witnessing is one more party watching the log. It isn't independent of
-  Workrr. Mirrors on other forges, Software Heritage, and the Bitcoin anchors exist so
+  workrr. Mirrors on other forges, Software Heritage, and the Bitcoin anchors exist so
   that nobody needs to take our word for it, and so we can't quietly rewrite it.
 
 Apache-2.0.

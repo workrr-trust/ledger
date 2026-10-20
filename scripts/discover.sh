@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Find new Workrr certificates without anyone submitting them.
+# Find new workrr certificates without anyone submitting them.
 #
 #   scripts/discover.sh <days> <out.json>
 #
@@ -7,7 +7,7 @@
 # repo that already has a certificate in the ledger. For each one, it lists the
 # `workrr-certificate` artifacts the certifier uploaded in the last <days> days,
 # reads the artifact digest from each, and asks GitHub's attestation store which
-# Workrr certificates exist for that digest. Every repo + digest that has one not
+# workrr certificates exist for that digest. Every repo + digest that has one not
 # yet under certificates/ goes to <out.json> as [{repository, digest}], for the
 # ingest workflow to verify from scratch.
 #

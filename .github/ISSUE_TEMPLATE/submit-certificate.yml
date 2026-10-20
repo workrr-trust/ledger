@@ -1,12 +1,12 @@
 name: Submit a certificate
-description: Index a Workrr certificate in the public ledger. No access needed; the ledger verifies it automatically.
+description: Index a workrr certificate in the public ledger. No access needed; the ledger verifies it automatically.
 title: "Submit certificate"
 labels: [certificate]
 body:
   - type: markdown
     attributes:
       value: |
-        Name the repository that ran the Workrr certifier and the artifact digest it printed
+        Name the repository that ran the workrr certifier and the artifact digest it printed
         (`subject-digest`). The ledger fetches the certificate from GitHub's public attestation
         store, re-verifies it against your source, and replies here.
   - type: input

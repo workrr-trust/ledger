@@ -1,4 +1,4 @@
-# Index new Workrr certificates without anyone submitting them. Pull-based, so the
+# Index new workrr certificates without anyone submitting them. Pull-based, so the
 # certifier (certify.yml, whose path is its signing identity) needs no change and
 # holds no ledger credential.
 #

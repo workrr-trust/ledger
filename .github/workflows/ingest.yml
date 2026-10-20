@@ -1,4 +1,4 @@
-# Index a Workrr certificate. Anyone can submit (an issue from the "Submit a
+# Index a workrr certificate. Anyone can submit (an issue from the "Submit a
 # certificate" form, a maintainer's workflow_dispatch, or the scheduled discover
 # workflow, which calls this one) and nobody needs write
 # access: a submission is only a pointer (repo + digest). The ledger fetches the

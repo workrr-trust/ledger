@@ -1,4 +1,4 @@
-// ckpt — verify Rekor v1 checkpoints committed to the Workrr Trust ledger.
+// ckpt — verify Rekor v1 checkpoints committed to the workrr Trust ledger.
 //
 // Every checkpoint signature is checked against the Rekor public key from the
 // Sigstore trusted root (fetched and verified via TUF, or pinned with
