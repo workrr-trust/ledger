@@ -1,0 +1,76 @@
+# Fast-forward push mirror to Codeberg (https://codeberg.org/workrr-trust/ledger).
+#
+# Uses the CODEBERG_TOKEN repository secret (a Codeberg repo/org access token
+# with repository write scope on workrr-trust/ledger). If CODEBERG_TOKEN is not
+# configured yet, the job logs a notice and exits 0 cleanly.
+name: mirror-codeberg
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: codeberg-mirror
+  cancel-in-progress: false
+
+env:
+  CODEBERG_REPO: https://codeberg.org/workrr-trust/ledger.git
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check CODEBERG_TOKEN secret
+        id: secret
+        env:
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+        run: |
+          if [ -z "${CODEBERG_TOKEN:-}" ]; then
+            echo "::notice::CODEBERG_TOKEN secret is not configured; skipping Codeberg mirror push."
+            echo "configured=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >>"$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.secret.outputs.configured == 'true'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Push fast-forward to Codeberg
+        if: steps.secret.outputs.configured == 'true'
+        env:
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+        run: |
+          set -euo pipefail
+          remote_tip=$(git ls-remote "$CODEBERG_REPO" refs/heads/main | cut -f1 || true)
+          local_tip=$(git rev-parse HEAD)
+          if [ "$remote_tip" = "$local_tip" ]; then
+            echo "Codeberg mirror is already at $local_tip."
+            exit 0
+          fi
+          if [ -n "$remote_tip" ]; then
+            git fetch --quiet "$CODEBERG_REPO" main
+            if ! git merge-base --is-ancestor "$remote_tip" "$local_tip"; then
+              echo "::error::Codeberg main ($remote_tip) is not an ancestor of GitHub main ($local_tip); refusing non-fast-forward push."
+              exit 1
+            fi
+          fi
+          git -c credential.helper= \
+            -c "http.https://codeberg.org/.extraheader=Authorization: token ${CODEBERG_TOKEN}" \
+            push "$CODEBERG_REPO" "$local_tip:refs/heads/main"
+          echo "Mirrored $local_tip to $CODEBERG_REPO"
+      - name: Ask Software Heritage to archive Codeberg mirror
+        if: steps.secret.outputs.configured == 'true'
+        continue-on-error: true
+        run: |
+          curl -fsS -X POST "https://archive.softwareheritage.org/api/1/origin/save/git/url/https://codeberg.org/workrr-trust/ledger/" |
+            jq '{save_request_status, save_task_status, origin_url}'

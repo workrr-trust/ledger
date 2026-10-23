@@ -53,10 +53,17 @@ for f in certificates/sha256/*/*.sigstore.json; do
 done
 echo "   $count certificate(s), $fails failure(s)"
 
-if [ -n "${MIRRORS:-}" ]; then
+DEFAULT_MIRRORS="https://gitlab.com/workrr-trust/ledger.git https://codeberg.org/workrr-trust/ledger.git"
+MIRRORS=${MIRRORS:-$DEFAULT_MIRRORS}
+
+if [ -n "$MIRRORS" ]; then
   echo "== 3. mirrors: every copy's history must contain, or be contained in, this one"
   for m in $MIRRORS; do
-    tip=$(git ls-remote "$m" refs/heads/main | cut -f1)
+    tip=$(git ls-remote "$m" refs/heads/main 2>/dev/null | cut -f1 || true)
+    if [ -z "$tip" ]; then
+      echo "   - $m (not yet initialized or unreachable; skipping)"
+      continue
+    fi
     git fetch --quiet "$m" main
     if git merge-base --is-ancestor "$tip" HEAD || git merge-base --is-ancestor HEAD "$tip"; then
       echo "   ✓ $m at ${tip:0:12}"

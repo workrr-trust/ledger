@@ -24,7 +24,7 @@ any single host. The design is in
 | `tools/ckpt/` | A small Go tool that verifies checkpoint signatures (against the Rekor key in Sigstore's trusted root) and consistency proofs (fetched from Rekor, checked locally). |
 | `sources.txt` | Repos the ledger watches for new certificates (opt-in, by pull request). |
 | `scripts/` | `audit.sh` (check everything), `discover.sh` (find unindexed certificates), `ingest.sh` (verify one repo + digest), `commit.sh` (signed commits through the GitHub API). |
-| `.github/workflows/` | `monitor` (hourly), `anchor` (daily), `discover` (hourly), `ingest` (per submission or discovery). |
+| `.github/workflows/` | `monitor` (hourly), `anchor` (daily), `discover` (hourly), `ingest` (per submission or discovery), `mirror-codeberg` (push & 6-hourly fast-forward to Codeberg). |
 | `mirror/gitlab-ci.yml` | The GitLab mirror's fast-forward-only sync job. |
 
 ## Audit it
@@ -34,7 +34,7 @@ Everything below needs only `git`, `go` (1.25+), and `jq`, and talks only to Git
 
 ```sh
 git clone https://github.com/workrr-trust/ledger && cd ledger
-MIRRORS="https://gitlab.com/workrr-trust/ledger.git" bash scripts/audit.sh
+bash scripts/audit.sh
 ```
 
 `audit.sh` builds `tools/ckpt` and the `workrr` CLI at the pinned certifier release
@@ -181,18 +181,18 @@ evidence. These steps need accounts workrr has to create by hand:
 If GitHub's history were ever rewritten, the job would fail and GitLab would keep the
 original.
 
-### Codeberg (non-profit mirror; durability only)
+### Codeberg (non-profit mirror; fast-forward push + durability)
 
 1. Create a codeberg.org account for workrr, and turn on 2FA. Codeberg is for free and
    open-source projects, which this is.
 2. Create the organization **`workrr-trust`** (codeberg.org/org/create), visibility public.
-3. **+ → New migration → GitHub**: URL `https://github.com/workrr-trust/ledger`, no
-   token needed (public repo). Owner `workrr-trust`, name `ledger`. Tick
-   **"This repository will be a mirror"**, and migrate only the repository, without
-   issues or pull requests.
-4. In the new repo, **Settings → Mirror settings**: set the interval to `8h` (the
-   default) or lower.
-5. Request a Software Heritage save for `https://codeberg.org/workrr-trust/ledger`.
+3. Create the public repository **`workrr-trust/ledger`** on Codeberg.
+4. Generate an access token with repository write scope on `workrr-trust/ledger` and save
+   it as the **`CODEBERG_TOKEN`** repository secret in `github.com/workrr-trust/ledger`.
+   `.github/workflows/mirror-codeberg.yml` pushes `main` fast-forward on every commit (and
+   skips cleanly if `CODEBERG_TOKEN` is not set).
+5. `scripts/audit.sh` checks both `https://gitlab.com/workrr-trust/ledger.git` and
+   `https://codeberg.org/workrr-trust/ledger.git` by default.
 
 Forgejo pull mirrors follow upstream force-pushes, so Codeberg is a copy, not a witness.
 The fast-forward-only witnesses are GitLab and Software Heritage's snapshots. Codeberg
