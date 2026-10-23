@@ -1,24 +1,40 @@
-# GitLab mirror of workrr-trust/ledger, run by GitLab (not GitHub) on a schedule.
-# Point the GitLab project at this file: Settings → CI/CD → General pipelines →
+# GitLab mirror & certifier pipeline for workrr-trust/ledger, run by GitLab.
+# Configured in GitLab: Settings → CI/CD → General pipelines →
 # CI/CD configuration file = mirror/gitlab-ci.yml. See README "Mirrors".
 #
-# It is a witness, not a copy: it only fast-forwards. If GitHub's history was
-# rewritten, the job fails and the GitLab copy keeps the old history as evidence.
-# It also re-checks, on GitLab's infrastructure, that the newest committed Rekor
-# checkpoint is consistent with the one GitLab already holds.
-#
-# Status: live at gitlab.com/workrr-trust/ledger since 2026-10-19, on a 6-hourly
-# schedule; tested and green.
+# 1. `mirror` job (6-hourly schedule, or web trigger without WORKRR_PATH):
+#    Witnesses https://github.com/workrr-trust/ledger.git (fast-forward only)
+#    and verifies Rekor checkpoint consistency on GitLab's infrastructure.
+# 2. `workrr-resolve` → `workrr-test` → `workrr-certify` (when WORKRR_PATH is set):
+#    Runs the isolated 3-stage GitLab certifier (untrusted tests in `workrr-test`
+#    with no id_tokens; keyless Sigstore signing in `workrr-certify` with
+#    SIGSTORE_ID_TOKEN) for two-forge Gold certification.
+
+stages:
+  - mirror
+  - resolve
+  - test
+  - certify
+
+variables:
+  WORKRR_SOURCE_URI: ""
+  WORKRR_SOURCE_COMMIT: ""
+  WORKRR_PATH: ""
+  WORKRR_POLICY: ""
+  WORKRR_TEST_COMMAND: ""
+  WORKRR_CERTIFY_REF: "v0.1.1"
+
 mirror:
+  stage: mirror
   image: golang:1.25
   rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"
+    - if: ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web") && $WORKRR_PATH == ""
   variables:
     GIT_DEPTH: "0"
     UPSTREAM: https://github.com/workrr-trust/ledger.git
   script:
     - apt-get update -qq && apt-get install -y -qq jq openssh-client >/dev/null
-    - git fetch --quiet "$UPSTREAM" main
+    - git fetch --quiet --tags "$UPSTREAM" main
     - upstream=$(git rev-parse FETCH_HEAD)
     - |
       if [ "$upstream" = "$CI_COMMIT_SHA" ]; then echo "Up to date."; exit 0; fi
@@ -40,4 +56,127 @@ mirror:
     - install -d -m 700 ~/.ssh
     - printf '%s' "$MIRROR_DEPLOY_KEY" | base64 -d > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
     - echo "gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf" > ~/.ssh/known_hosts
-    - git push "git@gitlab.com:${CI_PROJECT_PATH}.git" "$upstream:refs/heads/main"
+    - git push "git@gitlab.com:${CI_PROJECT_PATH}.git" "$upstream:refs/heads/main" --tags
+
+workrr-resolve:
+  stage: resolve
+  image: node:22-bookworm
+  rules:
+    - if: $WORKRR_PATH != ""
+  id_tokens:
+    WORKRR_RESOLVE_TOKEN:
+      aud: sigstore
+  script:
+    - |
+      node -e '
+        const fs = require("node:fs");
+        const token = process.env.WORKRR_RESOLVE_TOKEN || "";
+        const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+        const sha = payload.ci_config_sha || process.env.CI_COMMIT_SHA || "";
+        if (!/^[0-9a-f]{40}$/i.test(sha)) {
+          console.error("Could not resolve 40-char ci_config_sha from OIDC token");
+          process.exit(1);
+        }
+        fs.writeFileSync("workrr-resolve.env", `CERTIFIER_CONFIG_SHA=${sha}\n`);
+      '
+  artifacts:
+    reports:
+      dotenv: workrr-resolve.env
+    expire_in: 1 day
+
+# Runs untrusted artifact tests with NO id_tokens and NO deploy-key usage.
+workrr-test:
+  stage: test
+  image: node:22-bookworm
+  needs:
+    - job: workrr-resolve
+      artifacts: true
+  rules:
+    - if: $WORKRR_PATH != ""
+  variables:
+    GIT_DEPTH: "0"
+    MIRROR_DEPLOY_KEY: ""
+  script:
+    - apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip jq git >/dev/null
+    - python3 -m venv /tmp/workrr-py
+    - export PATH="/tmp/workrr-py/bin:$PATH"
+    - git clone --quiet --branch "$WORKRR_CERTIFY_REF" --depth 1 https://github.com/workrr-trust/certify.git /tmp/workrr-certifier
+    - cd /tmp/workrr-certifier && npm ci --silent && npm run build --silent
+    - |
+      if [ -n "$WORKRR_SOURCE_URI" ] && [ -n "$WORKRR_SOURCE_COMMIT" ]; then
+        git init --quiet /tmp/target-src
+        git -C /tmp/target-src fetch --quiet --depth 1 "$WORKRR_SOURCE_URI" "$WORKRR_SOURCE_COMMIT"
+        git -C /tmp/target-src -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+      else
+        cp -R "$CI_PROJECT_DIR" /tmp/target-src
+      fi
+    - cd /tmp/target-src
+    - |
+      set -- "/tmp/target-src/$WORKRR_PATH" --run-tests --out /tmp/statement-test.json
+      if [ -n "$WORKRR_POLICY" ]; then set -- "$@" --policy "/tmp/target-src/$WORKRR_POLICY"; fi
+      if [ -n "$WORKRR_TEST_COMMAND" ]; then set -- "$@" --test-command "$WORKRR_TEST_COMMAND"; fi
+      node /tmp/workrr-certifier/dist/cli.js certify "$@" || true
+    - |
+      node -e '
+        const fs = require("node:fs");
+        const stmt = JSON.parse(fs.readFileSync("/tmp/statement-test.json", "utf8"));
+        const out = {
+          subjectDigest: stmt.subject[0].digest.sha256,
+          tests: stmt.predicate.checks.tests,
+        };
+        fs.mkdirSync(process.env.CI_PROJECT_DIR + "/.workrr-out", { recursive: true });
+        fs.writeFileSync(process.env.CI_PROJECT_DIR + "/.workrr-out/tests.json", JSON.stringify(out, null, 2) + "\n");
+      '
+  artifacts:
+    paths:
+      - .workrr-out/tests.json
+    expire_in: 1 day
+
+# Signs the statement with Sigstore Fulcio + Rekor. Never executes artifact code.
+workrr-certify:
+  stage: certify
+  image: node:22-bookworm
+  needs:
+    - job: workrr-resolve
+      artifacts: true
+    - job: workrr-test
+      artifacts: true
+  rules:
+    - if: $WORKRR_PATH != ""
+  id_tokens:
+    SIGSTORE_ID_TOKEN:
+      aud: sigstore
+  variables:
+    GIT_DEPTH: "0"
+    MIRROR_DEPLOY_KEY: ""
+  script:
+    - git clone --quiet --branch "$WORKRR_CERTIFY_REF" --depth 1 https://github.com/workrr-trust/certify.git /tmp/workrr-certifier
+    - cd /tmp/workrr-certifier && npm ci --silent && npm run build --silent
+    - |
+      if [ -n "$WORKRR_SOURCE_URI" ] && [ -n "$WORKRR_SOURCE_COMMIT" ]; then
+        git init --quiet /tmp/target-src
+        git -C /tmp/target-src fetch --quiet --depth 1 "$WORKRR_SOURCE_URI" "$WORKRR_SOURCE_COMMIT"
+        git -C /tmp/target-src -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+        git -C /tmp/target-src remote add origin "$WORKRR_SOURCE_URI"
+      else
+        cp -R "$CI_PROJECT_DIR" /tmp/target-src
+      fi
+    - cd /tmp/target-src
+    - mkdir -p "$CI_PROJECT_DIR/workrr-certificate"
+    - |
+      set -- "/tmp/target-src/$WORKRR_PATH" \
+        --tests-report "$CI_PROJECT_DIR/.workrr-out/tests.json" \
+        --out "$CI_PROJECT_DIR/workrr-certificate/statement.json"
+      if [ -n "$WORKRR_POLICY" ]; then set -- "$@" --policy "/tmp/target-src/$WORKRR_POLICY"; fi
+      node /tmp/workrr-certifier/dist/cli.js certify "$@" > "$CI_PROJECT_DIR/workrr-certificate/summary.json"
+    - |
+      node /tmp/workrr-certifier/scripts/gitlab-sign.mjs \
+        --statement "$CI_PROJECT_DIR/workrr-certificate/statement.json" \
+        --out "$CI_PROJECT_DIR/workrr-certificate/certificate.sigstore.json"
+  artifacts:
+    name: workrr-certificate
+    paths:
+      - workrr-certificate/statement.json
+      - workrr-certificate/summary.json
+      - workrr-certificate/certificate.sigstore.json
+    expire_in: 90 days
