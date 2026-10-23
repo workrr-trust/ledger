@@ -24,7 +24,7 @@ any single host. The design is in
 | `tools/ckpt/` | A small Go tool that verifies checkpoint signatures (against the Rekor key in Sigstore's trusted root) and consistency proofs (fetched from Rekor, checked locally). |
 | `sources.txt` | Repos the ledger watches for new certificates (opt-in, by pull request). |
 | `scripts/` | `audit.sh` (check everything), `discover.sh` (find unindexed certificates), `ingest.sh` (verify one repo + digest), `commit.sh` (signed commits through the GitHub API). |
-| `.github/workflows/` | `monitor` (hourly), `anchor` (daily), `discover` (hourly), `ingest` (per submission or discovery), `mirror-codeberg` (push & 6-hourly fast-forward to Codeberg). |
+| `.github/workflows/` | `monitor` (every 5 min), `anchor` (daily), `discover` (every 5 min), `ingest` (per submission or discovery), `mirror-codeberg` (push & 6-hourly fast-forward to Codeberg). |
 | `mirror/gitlab-ci.yml` | The GitLab mirror's fast-forward-only sync job. |
 
 ## Audit it
@@ -85,7 +85,7 @@ signed commits.
 
 Nobody needs write access, including the certifier. A submission is only a pointer.
 
-- **Automatically.** The hourly `discover` workflow watches every repo in
+- **Automatically.** The `discover` workflow, run every 5 minutes, watches every repo in
   [`sources.txt`](sources.txt) and every repo that already has a certificate here. It
   lists the `workrr-certificate` artifacts the certifier uploaded in the last 3 days,
   reads their digests, and checks GitHub's attestation store for workrr certificates not
@@ -127,8 +127,14 @@ Why discovery is pull-based, and why it reads a watch list instead of searching:
 
 ## Self-witnessing Rekor
 
+**Timing.** GitHub delays or skips scheduled runs on quiet repositories, so a small
+Cloudflare Worker cron (`workrr-ledger-clock`) dispatches `monitor` and `discover`
+every 5 minutes through GitHub's API. Its only credential can start workflows on this
+repo and nothing else: it can't write to the ledger or sign anything. The workflows'
+own hourly schedules remain as a backstop if it stops.
+
 Public Rekor checkpoints are signed only by the log. Sigstore's witness cosigning is
-planned but not live. Until it is, `monitor` runs hourly:
+planned but not live. Until it is, `monitor` runs every 5 minutes:
 
 1. It runs [sigstore/rekor-monitor](https://github.com/sigstore/rekor-monitor), pinned
    by commit, against `latest.txt`. That verifies the log's new signed checkpoint and a

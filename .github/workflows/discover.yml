@@ -8,6 +8,8 @@
 # ingest workflow as a submission, which verifies it from scratch.
 name: discover
 
+# Dispatched every 5 minutes by the workrr-ledger-clock Worker cron; the hourly
+# schedule below is a backstop for when it stops.
 on:
   schedule:
     - cron: "37 * * * *"

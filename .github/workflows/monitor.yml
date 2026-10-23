@@ -1,6 +1,7 @@
 # Self-witnessing of public Rekor until Sigstore ships public witnessing.
 #
-# Every hour: fetch the latest signed checkpoint of rekor.sigstore.dev, prove it is
+# Every 5 minutes (dispatched by the workrr-ledger-clock Worker cron; the hourly
+# schedule below is a backstop): fetch the latest signed checkpoint of rekor.sigstore.dev, prove it is
 # append-only relative to the checkpoint we committed last time, and commit it.
 # The proof is checked twice, by two independent implementations: Sigstore's
 # rekor-monitor (pinned by commit) and this repo's tools/ckpt. Anyone can re-check
