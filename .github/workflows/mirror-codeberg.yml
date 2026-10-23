@@ -9,7 +9,6 @@ on:
   push:
     branches:
       - main
-      - cursor/codeberg-mirror
   schedule:
     - cron: "23 */6 * * *"
   workflow_dispatch:
