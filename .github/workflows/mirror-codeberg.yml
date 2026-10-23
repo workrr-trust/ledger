@@ -9,6 +9,7 @@ on:
   push:
     branches:
       - main
+      - cursor/codeberg-mirror
   schedule:
     - cron: "23 */6 * * *"
   workflow_dispatch:
@@ -20,6 +21,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  CODEBERG_ORG: workrr-trust
+  CODEBERG_REPO_NAME: ledger
   CODEBERG_REPO: https://codeberg.org/workrr-trust/ledger.git
 
 jobs:
@@ -45,28 +48,51 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Push fast-forward to Codeberg
+      - name: Ensure Codeberg repository exists and push fast-forward
         if: steps.secret.outputs.configured == 'true'
         env:
           CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
         run: |
           set -euo pipefail
-          remote_tip=$(git ls-remote "$CODEBERG_REPO" refs/heads/main | cut -f1 || true)
-          local_tip=$(git rev-parse HEAD)
+          status=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token ${CODEBERG_TOKEN}" \
+            "https://codeberg.org/api/v1/repos/${CODEBERG_ORG}/${CODEBERG_REPO_NAME}")
+          if [ "$status" = "404" ]; then
+            echo "Creating ${CODEBERG_ORG}/${CODEBERG_REPO_NAME} on Codeberg..."
+            create_status=$(curl -s -o /tmp/cb-create.json -w "%{http_code}" \
+              -X POST \
+              -H "Authorization: token ${CODEBERG_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d '{"name":"ledger","description":"Public workrr trust certificate and Rekor checkpoint ledger mirror","private":false,"auto_init":false,"default_branch":"main"}' \
+              "https://codeberg.org/api/v1/orgs/${CODEBERG_ORG}/repos")
+            if [ "$create_status" != "201" ] && [ "$create_status" != "409" ]; then
+              echo "::error::Could not create https://codeberg.org/${CODEBERG_ORG}/${CODEBERG_REPO_NAME} (HTTP $create_status): $(cat /tmp/cb-create.json)"
+              exit 1
+            fi
+          fi
+
+          basic_auth=$(printf 'x-access-token:%s' "$CODEBERG_TOKEN" | base64 | tr -d '\n')
+          git_cb() {
+            git -c credential.helper= \
+              -c "http.https://codeberg.org/.extraheader=Authorization: Basic ${basic_auth}" \
+              "$@"
+          }
+
+          git fetch --quiet origin main
+          local_tip=$(git rev-parse origin/main)
+          remote_tip=$(git_cb ls-remote "$CODEBERG_REPO" refs/heads/main | cut -f1 || true)
           if [ "$remote_tip" = "$local_tip" ]; then
             echo "Codeberg mirror is already at $local_tip."
             exit 0
           fi
           if [ -n "$remote_tip" ]; then
-            git fetch --quiet "$CODEBERG_REPO" main
+            git_cb fetch --quiet "$CODEBERG_REPO" main
             if ! git merge-base --is-ancestor "$remote_tip" "$local_tip"; then
               echo "::error::Codeberg main ($remote_tip) is not an ancestor of GitHub main ($local_tip); refusing non-fast-forward push."
               exit 1
             fi
           fi
-          git -c credential.helper= \
-            -c "http.https://codeberg.org/.extraheader=Authorization: token ${CODEBERG_TOKEN}" \
-            push "$CODEBERG_REPO" "$local_tip:refs/heads/main"
+          git_cb push "$CODEBERG_REPO" "$local_tip:refs/heads/main"
           echo "Mirrored $local_tip to $CODEBERG_REPO"
       - name: Ask Software Heritage to archive Codeberg mirror
         if: steps.secret.outputs.configured == 'true'
