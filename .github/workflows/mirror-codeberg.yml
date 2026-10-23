@@ -58,16 +58,15 @@ jobs:
             -H "Authorization: token ${CODEBERG_TOKEN}" \
             "https://codeberg.org/api/v1/repos/${CODEBERG_ORG}/${CODEBERG_REPO_NAME}")
           if [ "$status" = "404" ]; then
-            echo "Creating ${CODEBERG_ORG}/${CODEBERG_REPO_NAME} on Codeberg..."
+            echo "Attempting to create ${CODEBERG_ORG}/${CODEBERG_REPO_NAME} on Codeberg..."
             create_status=$(curl -s -o /tmp/cb-create.json -w "%{http_code}" \
               -X POST \
               -H "Authorization: token ${CODEBERG_TOKEN}" \
               -H "Content-Type: application/json" \
               -d '{"name":"ledger","description":"Public workrr trust certificate and Rekor checkpoint ledger mirror","private":false,"auto_init":false,"default_branch":"main"}' \
-              "https://codeberg.org/api/v1/orgs/${CODEBERG_ORG}/repos")
+              "https://codeberg.org/api/v1/orgs/${CODEBERG_ORG}/repos" || true)
             if [ "$create_status" != "201" ] && [ "$create_status" != "409" ]; then
-              echo "::error::Could not create https://codeberg.org/${CODEBERG_ORG}/${CODEBERG_REPO_NAME} (HTTP $create_status): $(cat /tmp/cb-create.json)"
-              exit 1
+              echo "::warning::https://codeberg.org/${CODEBERG_ORG}/${CODEBERG_REPO_NAME} does not exist yet and token lacks write:organization (HTTP $create_status); create empty repo 'ledger' under workrr-trust on Codeberg."
             fi
           fi
 
