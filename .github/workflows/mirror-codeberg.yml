@@ -9,6 +9,12 @@ on:
   push:
     branches:
       - main
+  # Most ledger commits are made by the ledger's own workflows with GITHUB_TOKEN,
+  # and GitHub never starts a `push` run for those. So also mirror after each of
+  # them finishes; the job is a no-op when Codeberg is already at GitHub's tip.
+  workflow_run:
+    workflows: [monitor, discover, ingest, anchor]
+    types: [completed]
   schedule:
     - cron: "23 */6 * * *"
   workflow_dispatch:
