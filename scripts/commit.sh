@@ -17,21 +17,26 @@ shift
 branch=${LEDGER_BRANCH:-main}
 head=$(git rev-parse HEAD)
 
-additions=$(for p in "$@"; do
-  jq -n --arg path "$p" --arg contents "$(base64 <"$p" | tr -d '\n')" '{path: $path, contents: $contents}'
-done | jq -s .)
+# File contents go through temp files, never command-line arguments: Linux caps a
+# single argument at 128 KiB, and the monthly checkpoint history outgrows that.
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+for p in "$@"; do
+  base64 <"$p" | tr -d '\n' >"$tmp/b64"
+  jq -n --arg path "$p" --rawfile contents "$tmp/b64" '{path: $path, contents: $contents}'
+done | jq -s . >"$tmp/additions.json"
 
 for attempt in 1 2 3 4 5; do
   if jq -n \
     --arg repo "$GITHUB_REPOSITORY" --arg branch "$branch" --arg head "$head" \
-    --arg headline "$headline" --arg body "${COMMIT_BODY:-}" --argjson additions "$additions" \
+    --arg headline "$headline" --arg body "${COMMIT_BODY:-}" --slurpfile additions "$tmp/additions.json" \
     '{
       query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }",
       variables: {input: {
         branch: {repositoryNameWithOwner: $repo, branchName: $branch},
         expectedHeadOid: $head,
         message: {headline: $headline, body: $body},
-        fileChanges: {additions: $additions}
+        fileChanges: {additions: $additions[0]}
       }}
     }' | gh api graphql --input - --jq '.data.createCommitOnBranch.commit | "committed \(.oid) \(.url)"'; then
     git fetch --quiet origin "$branch"
