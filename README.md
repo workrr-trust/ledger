@@ -28,7 +28,7 @@ any single host. The design is in
 | `tools/ckpt/` | A small Go tool that verifies checkpoint signatures (against the Rekor key in Sigstore's trusted root) and consistency proofs (fetched from Rekor, checked locally). |
 | `sources.txt` | Repos the ledger watches for new certificates (opt-in, by pull request). |
 | `scripts/` | `audit.sh` (check everything), `discover.sh` (find unindexed certificates), `ingest.sh` (verify one repo + digest), `commit.sh` (signed commits through the GitHub API). |
-| `.github/workflows/` | `monitor` (every 5 min), `anchor` (daily), `discover` (every 5 min), `ingest` (per submission or discovery), `identity-watch` (every 15 min), `mirror-codeberg` (push & 6-hourly fast-forward to Codeberg). |
+| `.github/workflows/` | `monitor` (every 5 min), `anchor` (daily), `discover` (every 5 min), `ingest` (per submission or discovery), `identity-watch` (every 15 min), `canary` (hourly), `mirror-codeberg` (push & 6-hourly fast-forward to Codeberg). |
 | `mirror/gitlab-ci.yml` | The GitLab mirror's fast-forward-only sync job. |
 
 ## Audit it
@@ -177,6 +177,19 @@ minutes (dispatched by `workrr-ledger-clock`; an hourly schedule is the backstop
    release tag that was moved or deleted. A new tag is recorded and opens a
    `certifier-tag` issue, so a release nobody made doesn't go unnoticed.
 4. Every match, expected or not, is appended to `identities/YYYY-MM.jsonl`.
+
+## Canary
+
+A watcher that silently stops is worse than none. `canary` runs hourly:
+
+- It re-verifies two known certificates (one per certifier release) with both released
+  verifiers, the Go CLI and the npm CLI. Then it changes one byte of each artifact, and
+  both verifiers must reject it.
+- It checks that every watcher reported recently: `monitor` and a clock-dispatched run
+  within 30 minutes, `identity-watch` within 90, and the GitLab mirror, GitLab witness
+  and Codeberg mirror within 12 hours.
+
+Any failure opens a `canary` issue, and the next clean run closes it.
 
 ## Mirrors and archives
 

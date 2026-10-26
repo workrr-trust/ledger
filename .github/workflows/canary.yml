@@ -1,0 +1,144 @@
+# Canary: check that verification still works, and that every watcher is still watching.
+#
+# Hourly (dispatched by the workrr-ledger-clock Worker; the schedule is a backstop):
+#
+# 1. Verify. Two known certificates from this ledger (one per certifier release) are
+#    re-verified against a fresh checkout of their source with BOTH released verifiers,
+#    the Go CLI and the npm CLI. Then one byte of each artifact is changed and both
+#    verifiers must REJECT it. A verifier that passes everything is as broken as one
+#    that passes nothing.
+# 2. Staleness. Each watcher must have reported recently:
+#      monitor (Rekor checkpoint)      success in the last 30 min
+#      clock Worker dispatches          a dispatched monitor run in the last 30 min
+#      identity-watch (CT log)          success in the last 90 min
+#      GitLab mirror / Codeberg mirror  head commit no older than 12 h
+#      GitLab witness pipeline          success in the last 12 h
+#
+# Any failure opens one `canary` issue (if none is open); a clean run closes it.
+name: canary
+
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  # workrr-trust/certify v0.1.1 (commit), and the npm release of the same code.
+  CERTIFY_COMMIT: 5a1d5c47fc1175db9979e13a2301dae57458a135
+  NPM_CLI: "@workrr-trust/certify@0.1.1"
+  # Certificates in this repo; the source repo, commit and path come from each
+  # signed statement.
+  CANARIES: |
+    certificates/sha256/91cf3310705a521728b52c44f5e62df49767895e73eb0990d5ea739c7df8c884/3325986274.sigstore.json
+    certificates/sha256/dbe75cfb88a9e8f2a2486fe1db5842e40a520ddcd20abe010cdeb0263c238052/3412710103.sigstore.json
+
+jobs:
+  canary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read # read other workflows' run history
+      issues: write # open or close the canary issue
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Verify known certificates, and reject tampered copies
+        run: |
+          GOBIN="$RUNNER_TEMP/bin" go install "github.com/workrr-trust/certify/go/cmd/workrr@$CERTIFY_COMMIT"
+          npm install --prefix "$RUNNER_TEMP/npm" --ignore-scripts --no-audit --no-fund "$NPM_CLI" >/dev/null
+          go_cli="$RUNNER_TEMP/bin/workrr"
+          npm_cli="$RUNNER_TEMP/npm/node_modules/.bin/workrr"
+          fail=0
+          note() { echo "$*" | tee -a "$RUNNER_TEMP/problems.txt"; fail=1; }
+          while read -r cert; do
+            [ -n "$cert" ] || continue
+            st=$(jq -r .dsseEnvelope.payload "$cert" | base64 -d)
+            uri=$(jq -r .predicate.source.uri <<<"$st")
+            commit=$(jq -r .predicate.source.commit <<<"$st")
+            path=$(jq -r .predicate.source.path <<<"$st")
+            src="$RUNNER_TEMP/src-$commit"
+            if [ ! -d "$src" ]; then
+              git init -q "$src"
+              git -C "$src" fetch -q --depth 1 "$uri" "$commit"
+              git -C "$src" -c advice.detachedHead=false checkout -q FETCH_HEAD
+            fi
+            # Same directory name for the original and the tampered copy, so only content differs.
+            good="$RUNNER_TEMP/good/$commit/$(basename "$path")"
+            bad="$RUNNER_TEMP/bad/$commit/$(basename "$path")"
+            mkdir -p "$(dirname "$good")" "$(dirname "$bad")"
+            cp -R "$src/$path" "$good"
+            cp -R "$src/$path" "$bad"
+            victim=$(find "$bad" -type f | sort | head -1)
+            printf ' ' >>"$victim"
+            for cli in go npm; do
+              bin=$go_cli; [ "$cli" = npm ] && bin=$npm_cli
+              if "$bin" verify "$good" --bundle "$cert" >"$RUNNER_TEMP/out.txt" 2>&1; then
+                echo "ok    $cli verifies $path @ ${commit:0:12}"
+              else
+                note "FAIL  $cli no longer verifies $path @ ${commit:0:12} ($cert): $(tail -3 "$RUNNER_TEMP/out.txt" | tr '\n' ' ')"
+              fi
+              if "$bin" verify "$bad" --bundle "$cert" >/dev/null 2>&1; then
+                note "FAIL  $cli ACCEPTED a tampered copy of $path @ ${commit:0:12} ($cert)"
+              else
+                echo "ok    $cli rejects a tampered copy of $path"
+              fi
+            done
+          done <<<"$CANARIES"
+          exit $fail
+      - name: Check every watcher reported recently
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          now=$(date -u +%s)
+          fail=0
+          note() { echo "$*" | tee -a "$RUNNER_TEMP/problems.txt"; fail=1; }
+          age() { echo $(( (now - $(date -u -d "$1" +%s)) / 60 )); } # minutes since an ISO time
+          check() { # <label> <iso time or empty> <max minutes>
+            if [ -z "$2" ] || [ "$2" = null ]; then note "STALE $1: never"; return; fi
+            local m; m=$(age "$2")
+            if [ "$m" -gt "$3" ]; then note "STALE $1: last at $2 ($m min ago, limit $3)"; else echo "ok    $1: $m min ago"; fi
+          }
+          last_run() { # <workflow file> [event]
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$1/runs?status=success&per_page=1${2:+&event=$2}" --jq '.workflow_runs[0].created_at // empty'
+          }
+          check "monitor (Rekor checkpoint)" "$(last_run monitor.yml)" 30
+          check "clock Worker dispatch" "$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/monitor.yml/runs?event=workflow_dispatch&per_page=1" --jq '.workflow_runs[0].created_at // empty')" 30
+          check "identity-watch (CT log)" "$(last_run identity-watch.yml)" 90
+          gl=https://gitlab.com/api/v4/projects/workrr-trust%2Fledger
+          check "GitLab mirror head" "$(curl -fsS "$gl/repository/branches/main" | jq -r .commit.committed_date)" 720
+          check "GitLab witness pipeline" "$(curl -fsS "$gl/pipelines?status=success&per_page=1" | jq -r '.[0].updated_at // empty')" 720
+          check "Codeberg mirror head" "$(curl -fsS https://codeberg.org/api/v1/repos/workrr-trust/ledger/branches/main | jq -r .commit.timestamp)" 720
+          exit $fail
+      - name: Open or update the canary issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create canary --color FBCA04 --description "A canary or staleness check failed" 2>/dev/null || true
+          body=$(printf 'Run: %s\n\n```\n%s\n```' "$RUN_URL" "$(cat "$RUNNER_TEMP/problems.txt" 2>/dev/null || echo 'the canary job failed before a check ran')")
+          # One open issue; later failing runs show on the Actions tab, not as comments.
+          if [ -z "$(gh issue list --label canary --state open --json number --jq '.[0].number // empty')" ]; then
+            gh issue create --label canary --title "Canary: verification or a watcher needs attention" --body "$body"
+          fi
+      - name: Close the canary issue when all is well
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          for n in $(gh issue list --label canary --state open --json number --jq '.[].number'); do
+            gh issue close "$n" --comment "All checks pass again: $RUN_URL"
+          done
