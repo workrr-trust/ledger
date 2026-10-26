@@ -1,0 +1,184 @@
+# Identity watch: catch any certificate issued under workrr's signer identity that
+# wasn't produced by a released certifier.
+#
+# Fulcio logs every signing certificate it issues to Sigstore's certificate
+# transparency (CT) log. Every 15 minutes (dispatched by the workrr-ledger-clock
+# Worker; the hourly schedule is a backstop) Sigstore's ct_monitor (pinned by commit)
+# verifies the CT log's signed tree head and its consistency with the last run's, and
+# moves the saved position forward. tools/idcheck then reads EVERY entry between the
+# two positions (ct_monitor's own identity search reads only the first few hundred),
+# picks out certificates whose SAN is workrr-trust/certify's certify.yml, and
+# classifies each one: EXPECTED only if it was issued to certify.yml at a released tag AND its
+# Build Signer Digest is that tag's SHA. Anything else (a branch, an unknown tag, a
+# mismatched SHA) means a forge compromise or a forged certificate: the run fails
+# and opens an `identity-alert` issue.
+#
+# Every match, expected or not, is appended to identities/<YYYY-MM>.jsonl: the
+# public list of every certificate ever issued under workrr's identity. The CT
+# position is kept in checkpoints/ctfe.sigstore.dev-2022/ct-monitor.json.
+name: identity-watch
+
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ledger-write
+  cancel-in-progress: false
+
+env:
+  # sigstore/rekor-monitor main @ 2026-10-19, the same pin as monitor.yml.
+  REKOR_MONITOR_SHA: 47017b2379cb3452271ce0cc1e33d05f61c5e275
+  CT_URL: https://ctfe.sigstore.dev/2022
+  CURSOR: checkpoints/ctfe.sigstore.dev-2022/ct-monitor.json
+  TAGS: identities/certifier-tags.txt
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write # commit the CT position and identities log (via the API, so GitHub signs it)
+      issues: write # open an issue on an unexpected certificate or a failure
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sigstore/rekor-monitor
+          ref: ${{ env.REKOR_MONITOR_SHA }}
+          path: .rekor-monitor
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tools/idcheck/go.mod
+          cache-dependency-path: |
+            .rekor-monitor/go.sum
+            tools/idcheck/go.sum
+      - name: Build ct_monitor and idcheck
+        env:
+          GOTOOLCHAIN: auto
+        run: |
+          (cd .rekor-monitor && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/ct_monitor" ./cmd/ct_monitor)
+          (cd tools/idcheck && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/idcheck" .)
+      - name: Scan the CT log for workrr's signer identity
+        id: scan
+        run: |
+          mkdir -p "$(dirname "$CURSOR")" identities
+          from=""
+          [ -f "$CURSOR" ] && from=$(jq -r .tree_size "$CURSOR")
+          cfg=$(cat <<'YAML'
+          monitoredValues:
+            certIdentities:
+              - certSubject: ^https://github\.com/workrr-trust/certify/\.github/workflows/certify\.yml@.*$
+                issuers:
+                  - ^https://token\.actions\.githubusercontent\.com$
+          YAML
+          )
+          "$RUNNER_TEMP/ct_monitor" --once --url "$CT_URL" --file "$CURSOR" --config "$cfg" \
+            --user-agent "workrr-trust-ledger/$GITHUB_RUN_ID"
+          to=$(jq -r .tree_size "$CURSOR")
+          # The first run only records a starting position.
+          [ -n "$from" ] && echo "range=$from:$to" >>"$GITHUB_OUTPUT"
+          echo "CT entries ${from:-<first run>} to $to"
+      - name: Check certifier tags against the committed snapshot
+        id: tags
+        run: |
+          # "<tag> <tag-object-sha> <commit-sha>" for every vX.Y.Z tag, as GitHub serves it now.
+          git ls-remote --tags https://github.com/workrr-trust/certify.git 'refs/tags/v*' |
+            awk '{ref=$2; sub("refs/tags/","",ref); sub("\\^\\{\\}$","",ref); a[ref]=a[ref]" "$1} END {for (t in a) print t a[t]}' |
+            sort >"$RUNNER_TEMP/live-tags.txt"
+          # Classify against the SNAPSHOT for tags already seen, so a tag moved or
+          # re-pushed after a compromise can't make its certificates look expected.
+          # A new tag is added (and noted in an issue); a moved or deleted one alerts.
+          python3 - "$TAGS" "$RUNNER_TEMP/live-tags.txt" "$RUNNER_TEMP/tags.txt" "$RUNNER_TEMP/tag-changes.txt" <<'PY'
+          import sys
+          def load(p):
+              try:
+                  return {l.split()[0]: l.split() for l in open(p) if l.strip()}
+              except FileNotFoundError:
+                  return None
+          snap, live = load(sys.argv[1]), load(sys.argv[2])
+          first = snap is None
+          snap = snap or {}
+          merged, changes = dict(snap), []
+          for t, f in live.items():
+              if t not in snap:
+                  merged[t] = f
+                  if not first:
+                      changes.append(f"new tag {t}: {' '.join(f[1:])}")
+              elif f != snap[t]:
+                  changes.append(f"MOVED tag {t}: was {' '.join(snap[t][1:])}, now {' '.join(f[1:])}")
+          for t in snap:
+              if t not in live:
+                  changes.append(f"DELETED tag {t} (was {' '.join(snap[t][1:])})")
+          out = "".join(" ".join(merged[t]) + "\n" for t in sorted(merged))
+          open(sys.argv[3], "w").write(out)
+          open(sys.argv[1], "w").write(out)
+          open(sys.argv[4], "w").write("".join(c + "\n" for c in changes))
+          PY
+          cat "$RUNNER_TEMP/tags.txt"
+          changes="$RUNNER_TEMP/tag-changes.txt"
+          if grep -qE '^(MOVED|DELETED)' "$changes"; then echo "alert=true" >>"$GITHUB_OUTPUT"; fi
+          if grep -q '^new' "$changes"; then echo "new=true" >>"$GITHUB_OUTPUT"; fi
+          cat "$changes"
+      - name: Read the new CT entries and classify every match
+        id: classify
+        if: steps.scan.outputs.range != ''
+        env:
+          RANGE: ${{ steps.scan.outputs.range }}
+        run: |
+          set +e
+          "$RUNNER_TEMP/idcheck" -scan "$RANGE" -tags "$RUNNER_TEMP/tags.txt" -ct "$CT_URL" \
+            -out "identities/$(date -u +%Y-%m).jsonl" | tee "$RUNNER_TEMP/idcheck.txt"
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "status=$status" >>"$GITHUB_OUTPUT"
+          [ "$status" -le 2 ] || exit "$status"
+      - name: Commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          month="identities/$(date -u +%Y-%m).jsonl"
+          files=("$CURSOR" "$TAGS")
+          [ -f "$month" ] && files+=("$month")
+          bash scripts/commit.sh "identity-watch: CT log through tree size $(jq -r .tree_size "$CURSOR")" "${files[@]}"
+      - name: Note a new certifier tag
+        if: steps.tags.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create certifier-tag --color 0E8A16 --description "A new certifier release tag was recorded" 2>/dev/null || true
+          body=$(printf 'identity-watch recorded a new certifier tag. Certificates issued under it now count as expected.\n\n```\n%s\n```\n\nIf this is not a release you made, treat it as a compromise. Run: %s' "$(grep '^new' "$RUNNER_TEMP/tag-changes.txt")" "$RUN_URL")
+          gh issue create --label certifier-tag --title "New certifier tag recorded" --body "$body"
+      - name: Alert on an unexpected certificate or a moved tag
+        if: steps.classify.outputs.status == '2' || steps.tags.outputs.alert == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create identity-alert --color B60205 --description "Unexpected certificate under workrr's signer identity" 2>/dev/null || true
+          certs=$(grep '"expected":false' "$RUNNER_TEMP/idcheck.txt" 2>/dev/null | head -20 || true)
+          tags=$(grep -E '^(MOVED|DELETED)' "$RUNNER_TEMP/tag-changes.txt" || true)
+          body=$(printf 'identity-watch found something that does not match a released certifier tag.\n\nRun: %s\n\nCertificates:\n```\n%s\n```\n\nTag changes:\n```\n%s\n```\n\nTreat this as a possible forge compromise or forged certificate until explained. Check the run URL and source repo in each line.' "$RUN_URL" "${certs:-none}" "${tags:-none}")
+          # One open alert at a time; the run still fails on every repeat.
+          if [ -z "$(gh issue list --label identity-alert --state open --json number --jq '.[].number')" ]; then
+            gh issue create --label identity-alert --title "Unexpected certificate or tag under workrr's signer identity" --body "$body"
+          fi
+          exit 1
+      - name: Report failure
+        if: failure() && steps.classify.outputs.status != '2' && steps.tags.outputs.alert != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create identity-watch-failure --color D93F0B --description "identity-watch failed to run" 2>/dev/null || true
+          if [ -z "$(gh issue list --label identity-watch-failure --state open --json number --jq '.[].number')" ]; then
+            gh issue create --label identity-watch-failure --title "identity-watch failed" \
+              --body "The CT identity watch failed: $RUN_URL. A network error is the usual cause; certificates issued meanwhile are still caught on the next successful run, which resumes from the saved CT position."
+          fi

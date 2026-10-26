@@ -1,6 +1,6 @@
-# workrr Trust ledger
+# workrr trust ledger
 
-The public, append-only record of every [workrr Trust](https://github.com/workrr-trust/certify)
+The public, append-only record of every [workrr trust](https://github.com/workrr-trust/certify)
 certificate, plus our own witness record of the public Sigstore Rekor log that the
 certificates are logged in.
 
@@ -21,10 +21,14 @@ any single host. The design is in
 | `checkpoints/rekor.sigstore.dev/latest.txt` | The latest Rekor checkpoint we have verified (rekor-monitor format: the signed note with newlines escaped as `\n`). |
 | `checkpoints/rekor.sigstore.dev/history/YYYY-MM.txt` | Every checkpoint we have committed, oldest first, as `<time observed, UTC> <checkpoint>`. Each one is proven consistent with the one before it. The chain starts at the inclusion checkpoint of the first certificate. |
 | `anchors/YYYY-MM-DD.checkpoint.txt` + `.ots` | That day's latest checkpoint and its [OpenTimestamps](https://opentimestamps.org) proof, anchored in Bitcoin. |
+| `identities/YYYY-MM.jsonl` | Every signing certificate Sigstore's Fulcio issued under workrr's certifier identity, as found in its certificate transparency log, one JSON line each: CT index, SAN, signer SHA, source repo, run, and whether it matched a released tag. |
+| `identities/certifier-tags.txt` | The certifier release tags identity-watch has seen, with the tag and commit SHAs. |
+| `checkpoints/ctfe.sigstore.dev-2022/ct-monitor.json` | The last verified signed tree head of Sigstore's CT log: where the next identity-watch run starts. |
+| `tools/idcheck/` | A small Go tool that reads every CT entry in a range and classifies certificates issued to the certifier workflow. |
 | `tools/ckpt/` | A small Go tool that verifies checkpoint signatures (against the Rekor key in Sigstore's trusted root) and consistency proofs (fetched from Rekor, checked locally). |
 | `sources.txt` | Repos the ledger watches for new certificates (opt-in, by pull request). |
 | `scripts/` | `audit.sh` (check everything), `discover.sh` (find unindexed certificates), `ingest.sh` (verify one repo + digest), `commit.sh` (signed commits through the GitHub API). |
-| `.github/workflows/` | `monitor` (every 5 min), `anchor` (daily), `discover` (every 5 min), `ingest` (per submission or discovery), `mirror-codeberg` (push & 6-hourly fast-forward to Codeberg). |
+| `.github/workflows/` | `monitor` (every 5 min), `anchor` (daily), `discover` (every 5 min), `ingest` (per submission or discovery), `identity-watch` (every 15 min), `mirror-codeberg` (push & 6-hourly fast-forward to Codeberg). |
 | `mirror/gitlab-ci.yml` | The GitLab mirror's fast-forward-only sync job. |
 
 ## Audit it
@@ -152,6 +156,28 @@ Not yet covered: Rekor v2 shards (`logYYYY-N.rekor.sigstore.dev`). Sigstore's si
 config still points clients at v1, and every workrr certificate so far is a v1 entry.
 rekor-monitor's v2 mode will be added when certificates start landing there.
 
+## Identity watch
+
+A certificate is only as trustworthy as the identity that signed it: workrr-trust/certify's
+`certify.yml` at a released tag. If someone took over that repo, or GitHub's OIDC issuer
+were compromised, they could get Fulcio to issue certificates under that identity, and
+those would verify. They couldn't hide them, though: Fulcio logs every certificate it issues
+to Sigstore's certificate transparency (CT) log. `identity-watch` reads that log every 15
+minutes (dispatched by `workrr-ledger-clock`; an hourly schedule is the backstop):
+
+1. [sigstore/rekor-monitor](https://github.com/sigstore/rekor-monitor)'s `ct_monitor`,
+   pinned by commit, verifies the CT log's new signed tree head and its consistency with
+   our last one, and saves the new position.
+2. `tools/idcheck` reads **every** entry between the two positions and picks out
+   certificates issued to `certify.yml`. (ct_monitor's own identity search reads only the
+   first batch the log returns, a few hundred entries, and skips the rest of the window.)
+3. Each certificate is EXPECTED only if it names a release tag `vX.Y.Z` and its Build
+   Signer Digest is that tag's SHA, as recorded in `identities/certifier-tags.txt`. A
+   branch, an unknown tag or a mismatched SHA opens an `identity-alert` issue. So does a
+   release tag that was moved or deleted. A new tag is recorded and opens a
+   `certifier-tag` issue, so a release nobody made doesn't go unnoticed.
+4. Every match, expected or not, is appended to `identities/YYYY-MM.jsonl`.
+
 ## Mirrors and archives
 
 The mirrors are a durability layer, not the source of truth. Truth is the signatures and
@@ -211,6 +237,9 @@ can't sign either: public Sigstore Fulcio doesn't trust Codeberg's OIDC issuer y
   digests, and re-running the checks.
 - Revocations aren't recorded yet. A `revocations/` index and a signed trust-policy file
   arrive with certifier v0.2.
+- Identity watch catches certificates for a SAN we know about. It covers the GitHub
+  certifier; the GitLab certifier's identity is added when it ships. It detects misuse
+  after the fact. It doesn't prevent it.
 - Our self-witnessing is one more party watching the log. It isn't independent of
   workrr. Mirrors on other forges, Software Heritage, and the Bitcoin anchors exist so
   that nobody needs to take our word for it, and so we can't quietly rewrite it.
