@@ -33,8 +33,8 @@ on:
 permissions: {}
 
 env:
-  # workrr-trust/certify v0.1.0
-  CERTIFY_SHA: edf382958dd7ce070db0ed13af1cc8c31a150901
+  # workrr-trust/certify v0.1.4 (verifies public scans: the scan.yml observer signer)
+  CERTIFY_SHA: 14466afa6a8bc8612292b74ae63e764590041031
 
 jobs:
   verify:

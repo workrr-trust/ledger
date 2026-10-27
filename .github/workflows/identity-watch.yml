@@ -7,8 +7,8 @@
 # verifies the CT log's signed tree head and its consistency with the last run's, and
 # moves the saved position forward. tools/idcheck then reads EVERY entry between the
 # two positions (ct_monitor's own identity search reads only the first few hundred),
-# picks out certificates whose SAN is workrr-trust/certify's certify.yml, and
-# classifies each one: EXPECTED only if it was issued to certify.yml at a released tag AND its
+# picks out certificates whose SAN is workrr-trust/certify's certify.yml or scan.yml
+# (public scans), and classifies each one: EXPECTED only if it was issued at a released tag AND its
 # Build Signer Digest is that tag's SHA. Anything else (a branch, an unknown tag, a
 # mismatched SHA) means a forge compromise or a forged certificate: the run fails
 # and opens an `identity-alert` issue.

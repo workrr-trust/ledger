@@ -31,7 +31,9 @@ trap 'rm -rf "$work"' EXIT
   sed -e 's/#.*//' -e 's/[[:space:]]//g' sources.txt 2>/dev/null || true
   for f in certificates/sha256/*/*.sigstore.json; do
     [ -e "$f" ] || continue
-    jq -r '.dsseEnvelope.payload' "$f" | base64 -d | jq -r '.predicate.source.uri // empty'
+    # Public scans name the scanned repo, but their certificates live in workrr-trust/certify
+    # (listed in sources.txt), so they don't make that repo a watched one.
+    jq -r '.dsseEnvelope.payload' "$f" | base64 -d | jq -r 'select(.predicate.level != "scanned") | .predicate.source.uri // empty'
   done | sed 's|^https://github.com/||'
 } | awk 'NF' | sort -fu >"$work/repos"
 

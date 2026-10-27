@@ -7,7 +7,10 @@
 # Sigstore bundles come from GitHub's public attestation store for that repo, and
 # each one is indexed only if ALL of these hold:
 #   1. it is a workrr certificate (predicateType) for exactly this digest;
-#   2. its source is this repo, at a full commit SHA;
+#   2. its source is this repo, at a full commit SHA. The exception is workrr's public
+#      scans (docs/public-scans.md in workrr-trust/certify): their attestations live
+#      in OBSERVER_STORE and name the scanned repo as source, and the verifier accepts
+#      them only from the observer signer at level "scanned";
 #   3. `workrr verify` passes against a fresh checkout of that commit: the
 #      artifact re-hashes to the digest, the signature chains to Sigstore, the
 #      Rekor inclusion proof is valid, and the signer is the certifier allowed by
@@ -25,6 +28,7 @@ repo=$1
 digest=${2#sha256:}
 out=$3
 predicate_type=https://trust.workrr.ai/certificate/v0.1
+OBSERVER_STORE=workrr-trust/certify
 latest=checkpoints/rekor.sigstore.dev/latest.txt
 
 die() { echo "ingest: $*" >&2; echo "- ✗ $*" >>"$out/summary.md"; exit 1; }
@@ -65,14 +69,19 @@ while IFS= read -r bundle; do
   path=$(jq -r '.predicate.source.path // empty' <<<"$statement")
   fail() { echo "- ✗ Rekor $log_index: $*" >>"$out/summary.md"; }
   [ "$subject" = "$digest" ] || { fail "subject is not exactly sha256:$digest"; continue; }
-  [ "$uri" = "https://github.com/$repo" ] || { fail "source $uri is not https://github.com/$repo"; continue; }
+  if [ "$repo" = "$OBSERVER_STORE" ]; then
+    [[ $uri =~ ^https://github\.com/[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$ ]] || { fail "source $uri is not a GitHub repo"; continue; }
+    [ "$(jq -r '.predicate.level // empty' <<<"$statement")" = scanned ] || { fail "certificate in $OBSERVER_STORE is not a public scan"; continue; }
+  else
+    [ "$uri" = "https://github.com/$repo" ] || { fail "source $uri is not https://github.com/$repo"; continue; }
+  fi
   [[ $commit =~ ^[0-9a-f]{40}$ ]] || { fail "source commit is not a full SHA"; continue; }
   [[ $path =~ ^[A-Za-z0-9._@+-]+(/[A-Za-z0-9._@+-]+)*$ && ! /$path/ =~ /\.\.?/ ]] || { fail "unsafe source path"; continue; }
 
   src="$work/src-$commit"
   if [ ! -d "$src" ]; then
     git init --quiet "$src"
-    git -C "$src" fetch --quiet --depth 1 "https://github.com/$repo" "$commit" || { fail "cannot fetch $commit"; continue; }
+    git -C "$src" fetch --quiet --depth 1 "$uri" "$commit" || { fail "cannot fetch $commit"; continue; }
     git -C "$src" -c advice.detachedHead=false checkout --quiet FETCH_HEAD
   fi
   [ -e "$src/$path" ] || { fail "$path not found at $commit"; continue; }

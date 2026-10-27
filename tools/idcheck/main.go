@@ -1,9 +1,10 @@
 // idcheck — classify every certificate Sigstore's Fulcio issued under workrr's
 // signer identity, as found by rekor-monitor's ct_monitor in the CT log.
 //
-// A certificate is EXPECTED only if its SAN is
+// A certificate is EXPECTED only if its SAN is one of workrr's signing workflows
 //
 //	https://github.com/workrr-trust/certify/.github/workflows/certify.yml@refs/tags/<tag>
+//	https://github.com/workrr-trust/certify/.github/workflows/scan.yml@refs/tags/<tag>   (public scans)
 //
 // for a released tag, AND its Build Signer Digest (OID 1.3.6.1.4.1.57264.1.10) is
 // that tag's SHA. For an annotated tag GitHub records the tag OBJECT's SHA (not the
@@ -44,7 +45,11 @@ import (
 	"github.com/google/certificate-transparency-go/x509"
 )
 
-const certifierPrefix = "https://github.com/workrr-trust/certify/.github/workflows/certify.yml@"
+// The workflows that sign workrr certificates: certify.yml (called from a maintainer's
+// repo) and scan.yml (public scans run in workrr-trust/certify).
+var signerWorkflows = []string{"certify.yml", "scan.yml"}
+
+const workflowBase = "github.com/workrr-trust/certify/.github/workflows/"
 
 var (
 	oidBuildSignerDigest = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 10}
@@ -136,13 +141,19 @@ func classify(c *x509.Certificate, tags map[string][]string) record {
 	for _, u := range c.URIs {
 		r.SAN = u.String()
 	}
+	prefix := ""
+	for _, w := range signerWorkflows {
+		if p := "https://" + workflowBase + w + "@"; strings.HasPrefix(r.SAN, p) {
+			prefix = p
+		}
+	}
 	switch {
-	case !strings.HasPrefix(r.SAN, certifierPrefix):
-		r.Reason = "SAN is not the workrr certifier workflow"
+	case prefix == "":
+		r.Reason = "SAN is not a workrr certifier workflow"
 	case r.Issuer != "" && r.Issuer != "https://token.actions.githubusercontent.com":
 		r.Reason = "issuer is not GitHub Actions"
 	default:
-		ref := strings.TrimPrefix(r.SAN, certifierPrefix)
+		ref := strings.TrimPrefix(r.SAN, prefix)
 		m := tagRef.FindStringSubmatch(ref)
 		switch {
 		case m == nil:
@@ -172,8 +183,25 @@ func ext(c *x509.Certificate, oid asn1.ObjectIdentifier) string {
 	return ""
 }
 
-// Bytes every certificate issued to the certifier workflow contains (in its SAN).
-var needle = []byte("github.com/workrr-trust/certify/.github/workflows/certify.yml@")
+// Bytes every certificate issued to a certifier workflow contains (in its SAN).
+var needles = func() [][]byte {
+	var out [][]byte
+	for _, w := range signerWorkflows {
+		out = append(out, []byte(workflowBase+w+"@"))
+	}
+	return out
+}()
+
+func hasNeedle(b ...[]byte) bool {
+	for _, x := range b {
+		for _, n := range needles {
+			if bytes.Contains(x, n) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 type hit struct {
 	index int64
@@ -222,7 +250,7 @@ func scan(base string, from, to int64) ([]hit, error) {
 					for k := range entries {
 						idx := i + int64(k)
 						e := &entries[k]
-						if !bytes.Contains(e.LeafInput, needle) && !bytes.Contains(e.ExtraData, needle) {
+						if !hasNeedle(e.LeafInput, e.ExtraData) {
 							continue
 						}
 						h, err := parseLeaf(idx, e)

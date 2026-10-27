@@ -3,3 +3,5 @@
 # ledger where to look, and every certificate found is verified before indexing.
 # Repos that already have a certificate in the ledger are watched without a line here.
 workrr-trust/sample-skills
+# workrr's public scans (level scanned; scan.yml in workrr-trust/certify)
+workrr-trust/certify
