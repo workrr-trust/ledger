@@ -26,8 +26,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The branch tip, not the event's commit: a run queued behind another
+      # ledger writer would otherwise start from a tree that is already behind.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: main
           persist-credentials: false
       - name: Install the OpenTimestamps client (hash-pinned)
         run: |

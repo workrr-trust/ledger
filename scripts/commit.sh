@@ -9,6 +9,7 @@
 # contents:write and GITHUB_REPOSITORY. The commit is made on top of the local
 # HEAD; if another writer moved the branch meanwhile, it is retried on the new
 # tip only when that writer touched none of our paths, so nothing is clobbered.
+# A failure with the branch unchanged (a GitHub API error) is retried as is.
 set -euo pipefail
 
 headline=$1
@@ -45,7 +46,12 @@ for attempt in 1 2 3 4 5; do
   fi
   git fetch --quiet origin "$branch"
   tip=$(git rev-parse FETCH_HEAD)
-  [ "$tip" != "$head" ] || { echo "commit.sh: commit failed (branch did not move)" >&2; exit 1; }
+  if [ "$tip" = "$head" ]; then
+    # Branch unchanged: a transient API error. Retry as is.
+    echo "commit.sh: commit failed with $branch unchanged; retrying ($attempt)" >&2
+    sleep $((attempt * 5))
+    continue
+  fi
   if ! git diff --quiet "$head" "$tip" -- "$@"; then
     echo "commit.sh: $branch moved to $tip and changed our paths; refusing to overwrite" >&2
     exit 1

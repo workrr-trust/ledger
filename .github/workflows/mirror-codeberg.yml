@@ -33,7 +33,7 @@ env:
 jobs:
   mirror:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -76,27 +76,43 @@ jobs:
           fi
 
           basic_auth=$(printf 'x-access-token:%s' "$CODEBERG_TOKEN" | base64 | tr -d '\n')
-          git_cb() {
+          git_cb_once() {
             git -c credential.helper= \
               -c "http.https://codeberg.org/.extraheader=Authorization: Basic ${basic_auth}" \
               "$@"
           }
+          # Codeberg returns brief 502/503/504s; retry, then leave it to the next run.
+          # The canary alarms if the copy is more than 12 hours behind.
+          git_cb() {
+            for wait in 15 45 90 0; do
+              git_cb_once "$@" && return 0
+              [ "$wait" = 0 ] && break
+              echo "Codeberg request failed; retrying in ${wait}s." >&2
+              sleep "$wait"
+            done
+            return 1
+          }
+          unreachable() {
+            echo "::warning::Codeberg unreachable after retries; the next run will catch up."
+            exit 0
+          }
 
           git fetch --quiet origin main
           local_tip=$(git rev-parse origin/main)
-          remote_tip=$(git_cb ls-remote "$CODEBERG_REPO" refs/heads/main | cut -f1 || true)
+          remote_tip=$(git_cb ls-remote "$CODEBERG_REPO" refs/heads/main) || unreachable
+          remote_tip=$(cut -f1 <<<"$remote_tip")
           if [ "$remote_tip" = "$local_tip" ]; then
             echo "Codeberg mirror is already at $local_tip."
             exit 0
           fi
           if [ -n "$remote_tip" ]; then
-            git_cb fetch --quiet "$CODEBERG_REPO" main
+            git_cb fetch --quiet "$CODEBERG_REPO" main || unreachable
             if ! git merge-base --is-ancestor "$remote_tip" "$local_tip"; then
               echo "::error::Codeberg main ($remote_tip) is not an ancestor of GitHub main ($local_tip); refusing non-fast-forward push."
               exit 1
             fi
           fi
-          git_cb push "$CODEBERG_REPO" "$local_tip:refs/heads/main"
+          git_cb push "$CODEBERG_REPO" "$local_tip:refs/heads/main" || unreachable
           echo "Mirrored $local_tip to $CODEBERG_REPO"
       - name: Ask Software Heritage to archive Codeberg mirror
         if: steps.secret.outputs.configured == 'true'
