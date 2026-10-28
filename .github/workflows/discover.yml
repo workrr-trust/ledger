@@ -1,11 +1,12 @@
-# Index new workrr certificates without anyone submitting them. Pull-based, so the
+# Index new workrr certificates and findings without anyone submitting them. Pull-based, so the
 # certifier (certify.yml, whose path is its signing identity) needs no change and
 # holds no ledger credential.
 #
 # `discover` lists recent `workrr-certificate` artifacts in the watched repos
 # (sources.txt + repos already in the ledger), reads their digests, and keeps the
-# ones whose attestations aren't indexed yet. Each one then goes through the same
-# ingest workflow as a submission, which verifies it from scratch.
+# ones whose attestations aren't indexed yet. Public scans come from one index
+# artifact per scan.yml run in workrr-trust/certify. The pairs go to the same ingest
+# workflow as a submission, which verifies each from scratch, in batches of 40.
 name: discover
 
 # Dispatched every 5 minutes by the workrr-ledger-clock Worker cron; the hourly
@@ -18,6 +19,9 @@ on:
       days:
         description: Look back this many days (artifacts expire after the source repo's retention, 90 days by default)
         default: "3"
+      observer_minutes:
+        description: Public scans completed in the last this many minutes
+        default: "30"
 
 permissions: {}
 
@@ -31,7 +35,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      pairs: ${{ steps.find.outputs.pairs }}
+      batches: ${{ steps.find.outputs.batches }}
       count: ${{ steps.find.outputs.count }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,11 +46,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DAYS: ${{ inputs.days || '3' }}
+          # The hourly schedule (no inputs) is the backstop, so it looks back further.
+          OBSERVER_MINUTES: ${{ inputs.observer_minutes || '150' }}
         run: |
           set -o pipefail
-          [[ $DAYS =~ ^[0-9]{1,3}$ ]] || { echo "days must be a number"; exit 1; }
+          [[ $DAYS =~ ^[0-9]{1,3}$ && $OBSERVER_MINUTES =~ ^[0-9]{1,5}$ ]] || { echo "days and observer_minutes must be numbers"; exit 1; }
           bash scripts/discover.sh "$DAYS" "$RUNNER_TEMP/pairs.json" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "pairs=$(jq -c . "$RUNNER_TEMP/pairs.json")" >>"$GITHUB_OUTPUT"
+          # Batches of 40, at most 20 per run (800 pairs); the rest wait for the next run.
+          echo "batches=$(jq -c --arg run "$GITHUB_RUN_ID" '[_nwise(40)] | .[:20] | to_entries
+            | map({batch: "\($run)-\(.key)", pairs: (.value | tojson)})' "$RUNNER_TEMP/pairs.json")" >>"$GITHUB_OUTPUT"
           echo "count=$(jq length "$RUNNER_TEMP/pairs.json")" >>"$GITHUB_OUTPUT"
 
   ingest:
@@ -54,8 +62,10 @@ jobs:
     if: needs.discover.outputs.count != '0'
     strategy:
       matrix:
-        include: ${{ fromJSON(needs.discover.outputs.pairs) }}
-      max-parallel: 1
+        include: ${{ fromJSON(needs.discover.outputs.batches) }}
+      # Verification runs in parallel; commits never overlap (each batch writes its
+      # own files) and commit.sh retries on a moved branch.
+      max-parallel: 3
       fail-fast: false
     # The ceiling for ingest.yml's jobs: verify reads, commit writes contents.
     # issues: write is only used by its report job, which runs for issue submissions.
@@ -64,5 +74,5 @@ jobs:
       issues: write
     uses: ./.github/workflows/ingest.yml
     with:
-      repository: ${{ matrix.repository }}
-      digest: ${{ matrix.digest }}
+      pairs: ${{ matrix.pairs }}
+      batch: ${{ matrix.batch }}

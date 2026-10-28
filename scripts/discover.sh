@@ -11,6 +11,12 @@
 # yet under certificates/ goes to <out.json> as [{repository, digest}], for the
 # ingest workflow to verify from scratch.
 #
+# Public scans (workrr-trust/certify's scan.yml) are found differently, since they
+# run in batches of up to 50: each scan.yml run completed in the last
+# OBSERVER_MINUTES (default 60) uploads one `workrr-scan-index` artifact listing
+# digest, predicate type (certificate or finding) and Rekor log index per target.
+# A record whose file isn't in certificates/ or findings/ yet goes to ingest.
+#
 # Discovery is permissive on purpose: the artifacts are untrusted and only used to
 # learn digests, and nothing is indexed unless scripts/ingest.sh verifies it.
 # Nothing from a watched repo is executed.
@@ -21,6 +27,8 @@ set -euo pipefail
 days=$1
 out=$2
 predicate_type=https://trust.workrr.ai/certificate/v0.1
+finding_type=https://trust.workrr.ai/finding/v0.1
+OBSERVER_STORE=workrr-trust/certify
 repo_re='^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$'
 since=$(jq -nr --argjson d "$days" 'now - $d * 86400 | todate')
 
@@ -76,5 +84,29 @@ sort -u "$work/pairs" | while read -r repo digest; do
   [ "$pending" -eq 0 ] || echo "$repo sha256:$digest" >>"$work/new"
 done
 
+# Public scans: one index artifact per scan.yml run.
+obs_since=$(jq -nr --argjson m "${OBSERVER_MINUTES:-60}" 'now - $m * 60 | todate')
+if gh api --paginate "repos/$OBSERVER_STORE/actions/workflows/scan.yml/runs?status=completed&per_page=100&created=>=$obs_since" \
+  --jq '.workflow_runs[].id' >"$work/runs" 2>"$work/err"; then
+  echo "$OBSERVER_STORE: $(wc -l <"$work/runs" | tr -d ' ') scan run(s) since $obs_since"
+  while IFS= read -r run; do
+    id=$(gh api "repos/$OBSERVER_STORE/actions/runs/$run/artifacts?name=workrr-scan-index" --jq '.artifacts[0] | select(.expired | not) | .id' 2>/dev/null) || continue
+    [ -n "$id" ] || continue
+    rm -f "$work/a.zip"
+    gh api "repos/$OBSERVER_STORE/actions/artifacts/$id/zip" >"$work/a.zip" 2>/dev/null || { echo "  skip run $run: download failed"; continue; }
+    unzip -p "$work/a.zip" index.jsonl 2>/dev/null | head -c 1000000 |
+      jq -r --arg ct "$predicate_type" --arg ft "$finding_type" '
+        select(.digest | test("^[0-9a-f]{64}$")) | select(.logIndex | tostring | test("^[0-9]{1,20}$"))
+        | [(if .predicateType == $ct then "certificates" elif .predicateType == $ft then "findings" else empty end), .digest, (.logIndex | tostring)]
+        | @tsv' 2>/dev/null |
+      while IFS=$'\t' read -r kind digest idx; do
+        [ -e "$kind/sha256/$digest/$idx.sigstore.json" ] || echo "$OBSERVER_STORE sha256:$digest"
+      done >>"$work/new" || true
+  done <"$work/runs"
+else
+  echo "skip: $OBSERVER_STORE scan runs: $(head -c 200 "$work/err")"
+fi
+
+sort -u "$work/new" -o "$work/new"
 jq -Rn '[inputs | split(" ") | {repository: .[0], digest: .[1]}]' <"$work/new" >"$out"
 echo "discover: $(jq length "$out") repo+digest pair(s) to ingest"

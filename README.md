@@ -27,6 +27,9 @@ any single host. The design is in
 | `tools/idcheck/` | A small Go tool that reads every CT entry in a range and classifies certificates issued to the certifier workflow. |
 | `tools/ckpt/` | A small Go tool that verifies checkpoint signatures (against the Rekor key in Sigstore's trusted root) and consistency proofs (fetched from Rekor, checked locally). |
 | `sources.txt` | Repos the ledger watches for new certificates (opt-in, by pull request). |
+| `findings/sha256/<artifact digest>/<rekor log index>.sigstore.json` | One file per signed finding: what a public scan signs when a security check fails (rule, file, line, commit). Indexed only after `workrr verify-finding` reproduces it on a fresh checkout. See [findings](https://github.com/workrr-trust/certify/blob/main/docs/findings.md). |
+| `index/YYYY/MM/DD/*.jsonl` | One immutable file per ingest batch, one JSON line per certificate or finding it added (digest, Rekor index, level, source, signer). Sites read these instead of every bundle. |
+| `scan-targets.txt` | Public repos and paths that workrr-trust/certify's `watch.yml` follows and re-scans when the path changes. Add targets by pull request; there is no opt-out list. |
 | `scripts/` | `audit.sh` (check everything), `discover.sh` (find unindexed certificates), `ingest.sh` (verify one repo + digest), `commit.sh` (signed commits through the GitHub API). |
 | `.github/workflows/` | `monitor` (every 5 min), `anchor` (daily), `discover` (every 5 min), `ingest` (per submission or discovery), `identity-watch` (every 15 min), `canary` (hourly), `mirror-codeberg` (push & 6-hourly fast-forward to Codeberg). |
 | `mirror/gitlab-ci.yml` | The GitLab mirror's fast-forward-only sync job. |

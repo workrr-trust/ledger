@@ -1,4 +1,4 @@
-# Index a workrr certificate. Anyone can submit (an issue from the "Submit a
+# Index workrr certificates and findings. Anyone can submit (an issue from the "Submit a
 # certificate" form, a maintainer's workflow_dispatch, or the scheduled discover
 # workflow, which calls this one) and nobody needs write
 # access: a submission is only a pointer (repo + digest). The ledger fetches the
@@ -25,16 +25,25 @@ on:
     inputs:
       repository:
         type: string
-        required: true
+        required: false
       digest:
         type: string
-        required: true
+        required: false
+      # Or a batch from discover: JSON [{repository, digest}, ...]. One build, one
+      # verify loop and one signed commit for the whole batch.
+      pairs:
+        type: string
+        required: false
+      batch:
+        description: Unique name for this batch's artifact
+        type: string
+        required: false
 
 permissions: {}
 
 env:
-  # workrr-trust/certify v0.1.4 (verifies public scans: the scan.yml observer signer)
-  CERTIFY_SHA: 14466afa6a8bc8612292b74ae63e764590041031
+  # workrr-trust/certify v0.1.5 (verify-finding; scan.yml observer at v0.1.4 and v0.1.5)
+  CERTIFY_SHA: 5fb6a6635f5cee1f8fe51cfa27fa997298d2faf3
 
 jobs:
   verify:
@@ -76,7 +85,19 @@ jobs:
           EVENT: ${{ github.event_name }}
           IN_REPO: ${{ inputs.repository }}
           IN_DIGEST: ${{ inputs.digest }}
+          IN_PAIRS: ${{ inputs.pairs }}
+          IN_BATCH: ${{ inputs.batch }}
         run: |
+          if [ -n "$IN_PAIRS" ]; then
+            # Validated again in ingest.sh; only safe values reach it.
+            jq -r '.[] | [.repository, .digest] | @tsv' <<<"$IN_PAIRS" |
+              awk -F'\t' '$1 ~ /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/ && $2 ~ /^(sha256:)?[0-9a-f]{64}$/' >"$RUNNER_TEMP/pairs.tsv"
+            echo "repository=batch" >>"$GITHUB_OUTPUT"
+            echo "digest=$(wc -l <"$RUNNER_TEMP/pairs.tsv" | tr -d ' ') digests" >>"$GITHUB_OUTPUT"
+            [[ $IN_BATCH =~ ^[A-Za-z0-9_-]{1,80}$ ]] || IN_BATCH=batch
+            echo "artifact=ingest-$IN_BATCH" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$EVENT" = issues ]; then
             # Issue-form body: "### Repository\n\n<value>\n\n### Artifact digest\n\n<value>"
             field() { jq -r '.issue.body // ""' "$GITHUB_EVENT_PATH" | tr -d '\r' |
@@ -90,21 +111,36 @@ jobs:
           [[ $IN_DIGEST =~ ^(sha256:)?[0-9a-f]{64}$ ]] || IN_DIGEST=invalid
           echo "repository=$IN_REPO" >>"$GITHUB_OUTPUT"
           echo "digest=sha256:${IN_DIGEST#sha256:}" >>"$GITHUB_OUTPUT"
+          printf '%s\t%s\n' "$IN_REPO" "sha256:${IN_DIGEST#sha256:}" >"$RUNNER_TEMP/pairs.tsv"
           # Unique per submission: discover runs several ingests in one workflow run.
           echo "artifact=ingest-${IN_REPO//\//_}-${IN_DIGEST: -16}" >>"$GITHUB_OUTPUT"
       - name: Verify
         id: ingest
         env:
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ steps.input.outputs.repository }}
-          DIGEST: ${{ steps.input.outputs.digest }}
         run: |
           out="$RUNNER_TEMP/out"
-          status=0
-          bash scripts/ingest.sh "$REPO" "$DIGEST" "$out" || status=$?
-          echo "count=$(cat "$out/count" 2>/dev/null || echo 0)" >>"$GITHUB_OUTPUT"
+          mkdir -p "$out"
+          : >"$out/summary.md"
+          : >"$out/index.jsonl"
+          count=0 n=0 failed=0
+          while IFS=$'\t' read -r repo digest; do
+            n=$((n + 1))
+            one="$RUNNER_TEMP/one-$n"
+            bash scripts/ingest.sh "$repo" "$digest" "$one" || failed=$((failed + 1))
+            count=$((count + $(cat "$one/count" 2>/dev/null || echo 0)))
+            { echo "#### $repo $digest"; cat "$one/summary.md"; } >>"$out/summary.md"
+            if [ -f "$one/index.jsonl" ]; then cat "$one/index.jsonl" >>"$out/index.jsonl"; fi
+            for d in certificates findings; do
+              if [ -d "$one/$d" ]; then mkdir -p "$out/$d" && cp -R "$one/$d/." "$out/$d/"; fi
+            done
+          done <"$RUNNER_TEMP/pairs.tsv"
+          echo "$count" >"$out/count"
+          echo "count=$count" >>"$GITHUB_OUTPUT"
           cat "$out/summary.md" >>"$GITHUB_STEP_SUMMARY"
-          exit $status
+          # A single submission must verify. A batch fails only if every pair did;
+          # individual failures are listed in the summary.
+          [ "$failed" -eq 0 ] || { [ "$n" -gt 1 ] && [ "$failed" -lt "$n" ]; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -136,20 +172,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ needs.verify.outputs.repository }}
           DIGEST: ${{ needs.verify.outputs.digest }}
+          ARTIFACT: ${{ needs.verify.outputs.artifact }}
         run: |
           cd "$RUNNER_TEMP/out"
-          mapfile -t files < <(find certificates -type f | sort)
+          mapfile -t files < <(find certificates findings -type f 2>/dev/null | sort)
           cd "$GITHUB_WORKSPACE"
           for f in "${files[@]}"; do
-            [[ $f =~ ^certificates/sha256/[0-9a-f]{64}/[0-9]{1,20}\.sigstore\.json$ ]] || { echo "unexpected path $f"; exit 1; }
+            [[ $f =~ ^(certificates|findings)/sha256/[0-9a-f]{64}/[0-9]{1,20}\.sigstore\.json$ ]] || { echo "unexpected path $f"; exit 1; }
             [ ! -e "$f" ] || { echo "already indexed: $f"; continue; }
             mkdir -p "$(dirname "$f")"
             cp "$RUNNER_TEMP/out/$f" "$f"
             new+=("$f")
           done
           [ ${#new[@]} -gt 0 ] || { echo "Nothing new."; exit 0; }
-          COMMIT_BODY="$(cat "$RUNNER_TEMP/out/summary.md")" \
-            bash scripts/commit.sh "certificate: $REPO $DIGEST" "${new[@]}"
+          # The index lines for exactly the files committed here, as one immutable file
+          # (the site reads these instead of every bundle).
+          idx="index/$(date -u +%Y/%m/%d)/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${ARTIFACT//[^A-Za-z0-9_-]/_}.jsonl"
+          mkdir -p "$(dirname "$idx")"
+          printf '%s\n' "${new[@]}" | jq -R . | jq -s . >"$RUNNER_TEMP/new.json"
+          jq -c --slurpfile keep "$RUNNER_TEMP/new.json" 'select(.file as $f | $keep[0] | index($f))' \
+            "$RUNNER_TEMP/out/index.jsonl" >"$idx"
+          [ -s "$idx" ] && new+=("$idx")
+          headline="certificate: $REPO $DIGEST"
+          [ "$REPO" != batch ] || headline="ingest: $(( ${#new[@]} - 1 )) record(s) from $DIGEST"
+          COMMIT_BODY="$(head -c 60000 "$RUNNER_TEMP/out/summary.md")" \
+            bash scripts/commit.sh "$headline" "${new[@]}"
 
   report:
     needs: [verify, commit]
