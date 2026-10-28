@@ -42,8 +42,8 @@ on:
 permissions: {}
 
 env:
-  # workrr-trust/certify v0.1.5 (verify-finding; scan.yml observer at v0.1.4 and v0.1.5)
-  CERTIFY_SHA: 5fb6a6635f5cee1f8fe51cfa27fa997298d2faf3
+  # workrr-trust/certify v0.1.6 (verify-finding, ruleset v0.2; scan.yml observer at v0.1.4, v0.1.5 and v0.1.6)
+  CERTIFY_SHA: a6aaa8f664d87f7dc2b8becb6382b29c15763025
 
 jobs:
   verify:
