@@ -11,9 +11,9 @@
 # (Run Invocation URI). This follows that pointer: digest → Rekor entries signed
 # by the witness identity → job → certificate.sigstore.json.
 #
-# Prints the Rekor log index of each witness entry. With <out-dir>, also downloads
-# each bundle to <out-dir>/<logIndex>.sigstore.json when its log index matches the
-# entry. Everything here is untrusted until scripts/ingest.sh verifies it.
+# Prints the Rekor log index of each witness entry whose bundle is available (in the
+# ledger or in its job's artifacts). With <out-dir>, also writes each bundle to
+# <out-dir>/<logIndex>.sigstore.json, after checking it is that entry. Everything here is untrusted until scripts/ingest.sh verifies it.
 #
 # Needs: curl, jq, openssl.
 set -euo pipefail
@@ -38,21 +38,27 @@ for uuid in $(head -200 <<<"$uuids"); do
   grep -Eq "$san_re" <<<"$text" || continue
   [[ $text =~ $job_re ]] || continue
   job=${BASH_REMATCH[1]}
-  echo "$idx"
-  [ -n "$out" ] || continue
-  mkdir -p "$out"
-  # The ledger's copy, once indexed: GitLab limits unauthenticated downloads per IP,
-  # and a download refused now is retried on discover's next run.
-  # Read from git, not the working tree: CI checks out without certificates/.
-  if git show "HEAD:certificates/sha256/$digest/$idx.sigstore.json" >"$out/$idx.sigstore.json" 2>/dev/null; then
+  file="certificates/sha256/$digest/$idx.sigstore.json"
+  if [ -e "$file" ]; then
+    # The ledger's copy, once indexed: GitLab limits unauthenticated requests per IP.
+    echo "$idx"
+    [ -z "$out" ] || { mkdir -p "$out"; cp "$file" "$out/$idx.sigstore.json"; }
     continue
   fi
-  rm -f "$out/$idx.sigstore.json"
-  if ! curl -fsSL --retry 2 --retry-max-time 60 --max-filesize 1000000 -o "$out/$idx.tmp" \
-    "$project/jobs/$job/artifacts/certificate/certificate.sigstore.json"; then
+  # Only entries whose job kept its certificate count. A job that failed after Rekor
+  # logged its entry (a retried upload, say) has none, and would otherwise be flagged
+  # on every run. A refused request is retried on discover's next run.
+  url="$project/jobs/$job/artifacts/certificate/certificate.sigstore.json"
+  if [ -z "$out" ]; then
+    curl -fsSI --retry 2 --retry-max-time 60 -o /dev/null "$url" 2>/dev/null && echo "$idx"
+    continue
+  fi
+  mkdir -p "$out"
+  if ! curl -fsSL --retry 2 --retry-max-time 60 --max-filesize 1000000 -o "$out/$idx.tmp" "$url"; then
     echo "witness: Rekor $idx: no certificate from job $job" >&2
   elif [ "$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' "$out/$idx.tmp" 2>/dev/null)" = "$idx" ]; then
     mv "$out/$idx.tmp" "$out/$idx.sigstore.json"
+    echo "$idx"
     continue
   else
     echo "witness: Rekor $idx: job $job's certificate is a different entry" >&2
