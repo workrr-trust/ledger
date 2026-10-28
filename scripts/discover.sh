@@ -7,7 +7,8 @@
 # repo that already has a certificate in the ledger. For each one, it lists the
 # `workrr-certificate` artifacts the certifier uploaded in the last <days> days,
 # reads the artifact digest from each, and asks GitHub's attestation store which
-# workrr certificates exist for that digest. Every repo + digest that has one not
+# workrr certificates exist for that digest, and Rekor which GitLab witness
+# certificates do (scripts/witness.sh). Every repo + digest that has one not
 # yet under certificates/ goes to <out.json> as [{repository, digest}], for the
 # ingest workflow to verify from scratch.
 #
@@ -78,6 +79,13 @@ sort -u "$work/pairs" | while read -r repo digest; do
       echo "  $repo sha256:${digest:0:12}: Rekor $idx already indexed"
     else
       echo "  $repo sha256:${digest:0:12}: Rekor $idx is new"
+      pending=1
+    fi
+  done
+  # The GitLab witness's certificates are found through Rekor (scripts/witness.sh).
+  for idx in $(bash scripts/witness.sh "$digest" 2>/dev/null || true); do
+    if [ ! -e "certificates/sha256/$digest/$idx.sigstore.json" ]; then
+      echo "  $repo sha256:${digest:0:12}: GitLab witness Rekor $idx is new"
       pending=1
     fi
   done

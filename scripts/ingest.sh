@@ -4,8 +4,9 @@
 #   scripts/ingest.sh <owner/repo> <sha256:hex> <out-dir>
 #
 # Pull, don't trust: the submitter only names a repository and a digest. The
-# Sigstore bundles come from GitHub's public attestation store for that repo, and
-# each one is indexed only if ALL of these hold:
+# Sigstore bundles come from GitHub's public attestation store for that repo (and,
+# for the GitLab witness, from Rekor's pointer to its job), and each one is indexed
+# only if ALL of these hold:
 #   1. it is a workrr certificate (predicateType) for exactly this digest;
 #   2. its source is this repo, at a full commit SHA. The exception is workrr's public
 #      scans (docs/public-scans.md in workrr-trust/certify): their attestations live
@@ -23,9 +24,14 @@
 # under findings/ only if `workrr verify-finding` passes: signature, Rekor and
 # observer signer as above, and the finding REPRODUCES (the same checks, re-run on
 # a fresh checkout of the commit, fail in exactly the same way). Check 4 applies too.
+# A certificate from the GitLab witness (docs/gitlab-certifier.md in
+# workrr-trust/certify) verifies alone as "scanned". When one is indexed, every
+# certificate for the digest is also verified together; if the publisher's GitHub
+# certificate and the witness agree, the witness record's level is "gold"
+# (Reproduced): the record that completed it.
 # Nothing from the source repo is executed; it is only checked out and hashed.
 #
-# Needs: gh (GH_TOKEN), jq, git, and `workrr` and `ckpt` on PATH. Run from the
+# Needs: gh (GH_TOKEN), jq, git, curl, openssl, and `workrr` and `ckpt` on PATH. Run from the
 # ledger root. Writes <out-dir>/certificates/..., <out-dir>/findings/...,
 # <out-dir>/summary.md, and <out-dir>/index.jsonl: one line per new record, read by
 # the site instead of every bundle (fields: kind, file, digest, logIndex, time,
@@ -54,8 +60,18 @@ if ! gh api --paginate "repos/$repo/attestations/sha256:$digest" >"$work/pages.j
   die "no attestations for sha256:$digest in $repo ($(head -c 200 "$work/err"))"
 fi
 jq -c '.attestations[].bundle' "$work/pages.json" >"$work/bundles.jsonl"
+# GitLab witness certificates aren't in the attestation store: Rekor points to them
+# (scripts/witness.sh). They go through the same checks as every other bundle.
+if [ "$repo" != "$OBSERVER_STORE" ]; then
+  bash scripts/witness.sh "$digest" "$work/witness" >/dev/null 2>"$work/witness.log" ||
+    echo "- ✗ GitLab witness lookup failed: $(tail -1 "$work/witness.log" | head -c 200)" >>"$out/summary.md"
+  for f in "$work"/witness/*.sigstore.json; do
+    [ -e "$f" ] && jq -c . "$f" >>"$work/bundles.jsonl"
+  done
+fi
 
 found=0 added=0 n=0
+certs=() witnesses=()
 while IFS= read -r bundle; do
   n=$((n + 1))
   b="$work/bundle-$n.json"
@@ -67,6 +83,7 @@ while IFS= read -r bundle; do
     *) continue ;;
   esac
   found=$((found + 1))
+  [ "$kind" = certificates ] && certs+=("$b")
 
   log_index=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' "$b")
   [[ $log_index =~ ^[0-9]{1,20}$ ]] || { echo "- ✗ bundle $n: no Rekor log index" >>"$out/summary.md"; continue; }
@@ -127,6 +144,10 @@ while IFS= read -r bundle; do
     continue
   fi
 
+  if [ "$kind" = certificates ] && [ "$(jq -r '.bundles[0].witness // false' "$work/verify-$n.json")" = true ]; then
+    witnesses+=("$dest $src/$path")
+  fi
+
   mkdir -p "$out/$(dirname "$dest")"
   jq . "$b" >"$out/$dest"
   jq -c --arg kind "${kind%s}" --arg file "$dest" --arg digest "$digest" --arg idx "$log_index" \
@@ -141,6 +162,22 @@ while IFS= read -r bundle; do
   added=$((added + 1))
   echo "- ✓ \`$dest\` — level **$level**, Rekor log index [$log_index](https://search.sigstore.dev/?logIndex=$log_index), source $uri@${commit:0:12} \`$path\`, signer \`$signer\`" >>"$out/summary.md"
 done <"$work/bundles.jsonl"
+
+# Reproduced: verify the new witness certificates together with every certificate
+# for this digest.
+for w in ${witnesses[@]+"${witnesses[@]}"}; do
+  read -r dest artifact <<<"$w"
+  args=()
+  for b in "${certs[@]}"; do args+=(--bundle "$b"); done
+  if workrr verify "$artifact" "${args[@]}" --json >"$work/gold.json" 2>/dev/null &&
+    [ "$(jq -r .level "$work/gold.json")" = gold ]; then
+    jq -c --arg f "$dest" 'if .file == $f then .level = "gold" else . end' "$out/index.jsonl" >"$work/index.jsonl"
+    mv "$work/index.jsonl" "$out/index.jsonl"
+    echo "- ★ \`$dest\` — the publisher's certificate and the GitLab witness agree: level **gold** (Reproduced)" >>"$out/summary.md"
+  else
+    echo "- = \`$dest\` — witness only: $(jq -r '[.notes[]?] | join("; ")' "$work/gold.json" 2>/dev/null)" >>"$out/summary.md"
+  fi
+done
 
 [ "$found" -gt 0 ] || die "no workrr certificates or findings for sha256:$digest in $repo"
 echo "$added" >"$out/count"
