@@ -12,7 +12,7 @@
 # ingest workflow to verify from scratch.
 #
 # Public scans (workrr-trust/certify's scan.yml) are found differently, since they
-# run in batches of up to 50: each scan.yml run completed in the last
+# run in batches of up to 50: each scan.yml run that completed in the last
 # OBSERVER_MINUTES (default 60) uploads one `workrr-scan-index` artifact listing
 # digest, predicate type (certificate or finding) and Rekor log index per target.
 # A record whose file isn't in certificates/ or findings/ yet goes to ingest.
@@ -86,9 +86,16 @@ done
 
 # Public scans: one index artifact per scan.yml run.
 obs_since=$(jq -nr --argjson m "${OBSERVER_MINUTES:-60}" 'now - $m * 60 | todate')
-if gh api --paginate "repos/$OBSERVER_STORE/actions/workflows/scan.yml/runs?status=completed&per_page=100&created=>=$obs_since" \
-  --jq '.workflow_runs[].id' >"$work/runs" 2>"$work/err"; then
-  echo "$OBSERVER_STORE: $(wc -l <"$work/runs" | tr -d ' ') scan run(s) since $obs_since"
+# By completion time, not creation: batches can wait in GitHub's queue for hours.
+# The newest 300 completed runs cover several hours of scanning.
+if gh api "repos/$OBSERVER_STORE/actions/workflows/scan.yml/runs?status=completed&per_page=100" \
+  --jq ".workflow_runs[] | select(.updated_at >= \"$obs_since\") | .id" >"$work/runs" 2>"$work/err" &&
+  for page in 2 3; do
+    gh api "repos/$OBSERVER_STORE/actions/workflows/scan.yml/runs?status=completed&per_page=100&page=$page" \
+      --jq ".workflow_runs[] | select(.updated_at >= \"$obs_since\") | .id" >>"$work/runs" 2>>"$work/err" || true
+  done; then
+  sort -u "$work/runs" -o "$work/runs"
+  echo "$OBSERVER_STORE: $(wc -l <"$work/runs" | tr -d ' ') scan run(s) completed since $obs_since"
   while IFS= read -r run; do
     id=$(gh api "repos/$OBSERVER_STORE/actions/runs/$run/artifacts?name=workrr-scan-index" --jq '.artifacts[0] | select(.expired | not) | .id' 2>/dev/null) || continue
     [ -n "$id" ] || continue
