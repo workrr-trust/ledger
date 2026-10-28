@@ -4,8 +4,9 @@
 #   scripts/ingest.sh <owner/repo> <sha256:hex> <out-dir>
 #
 # Pull, don't trust: the submitter only names a repository and a digest. The
-# Sigstore bundles come from GitHub's public attestation store for that repo, and
-# each one is indexed only if ALL of these hold:
+# Sigstore bundles come from GitHub's public attestation store for that repo (and,
+# for the GitLab witness, from Rekor's pointer to its job), and each one is indexed
+# only if ALL of these hold:
 #   1. it is a workrr certificate (predicateType) for exactly this digest;
 #   2. its source is this repo, at a full commit SHA. The exception is workrr's public
 #      scans (docs/public-scans.md in workrr-trust/certify): their attestations live
@@ -30,7 +31,7 @@
 # (Reproduced): the record that completed it.
 # Nothing from the source repo is executed; it is only checked out and hashed.
 #
-# Needs: gh (GH_TOKEN), jq, git, and `workrr` and `ckpt` on PATH. Run from the
+# Needs: gh (GH_TOKEN), jq, git, curl, openssl, and `workrr` and `ckpt` on PATH. Run from the
 # ledger root. Writes <out-dir>/certificates/..., <out-dir>/findings/...,
 # <out-dir>/summary.md, and <out-dir>/index.jsonl: one line per new record, read by
 # the site instead of every bundle (fields: kind, file, digest, logIndex, time,
@@ -59,6 +60,15 @@ if ! gh api --paginate "repos/$repo/attestations/sha256:$digest" >"$work/pages.j
   die "no attestations for sha256:$digest in $repo ($(head -c 200 "$work/err"))"
 fi
 jq -c '.attestations[].bundle' "$work/pages.json" >"$work/bundles.jsonl"
+# GitLab witness certificates aren't in the attestation store: Rekor points to them
+# (scripts/witness.sh). They go through the same checks as every other bundle.
+if [ "$repo" != "$OBSERVER_STORE" ]; then
+  bash scripts/witness.sh "$digest" "$work/witness" >/dev/null 2>"$work/witness.log" ||
+    echo "- ✗ GitLab witness lookup failed: $(tail -1 "$work/witness.log" | head -c 200)" >>"$out/summary.md"
+  for f in "$work"/witness/*.sigstore.json; do
+    [ -e "$f" ] && jq -c . "$f" >>"$work/bundles.jsonl"
+  done
+fi
 
 found=0 added=0 n=0
 certs=() witnesses=()
