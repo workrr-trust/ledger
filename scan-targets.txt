@@ -75800,3 +75800,4 @@ skillhq/telegram .
 shadowcz007/skills skills/qq-email
 seefreed/skills en-to-zh-translator
 jerrar670/surf-website .agent/skills/implement_lenis_scroll
+openai/skills skills/.curated/openai-docs
