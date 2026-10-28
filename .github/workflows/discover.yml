@@ -41,6 +41,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # certificates/ and findings/ grow with every record and this job doesn't read
+          # them: skip their blobs and keep them out of the working tree.
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/certificates/
+            !/findings/
       - name: Find unindexed certificates
         id: find
         env:

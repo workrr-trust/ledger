@@ -43,10 +43,11 @@ for uuid in $(head -200 <<<"$uuids"); do
   mkdir -p "$out"
   # The ledger's copy, once indexed: GitLab limits unauthenticated downloads per IP,
   # and a download refused now is retried on discover's next run.
-  if [ -e "certificates/sha256/$digest/$idx.sigstore.json" ]; then
-    cp "certificates/sha256/$digest/$idx.sigstore.json" "$out/$idx.sigstore.json"
+  # Read from git, not the working tree: CI checks out without certificates/.
+  if git show "HEAD:certificates/sha256/$digest/$idx.sigstore.json" >"$out/$idx.sigstore.json" 2>/dev/null; then
     continue
   fi
+  rm -f "$out/$idx.sigstore.json"
   if ! curl -fsSL --retry 2 --retry-max-time 60 --max-filesize 1000000 -o "$out/$idx.tmp" \
     "$project/jobs/$job/artifacts/certificate/certificate.sigstore.json"; then
     echo "witness: Rekor $idx: no certificate from job $job" >&2

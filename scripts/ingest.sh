@@ -88,7 +88,7 @@ while IFS= read -r bundle; do
   log_index=$(jq -r '.verificationMaterial.tlogEntries[0].logIndex // empty' "$b")
   [[ $log_index =~ ^[0-9]{1,20}$ ]] || { echo "- ✗ bundle $n: no Rekor log index" >>"$out/summary.md"; continue; }
   dest="$kind/sha256/$digest/$log_index.sigstore.json"
-  if [ -e "$dest" ]; then
+  if [ -n "$(git ls-tree --name-only HEAD -- "$dest")" ]; then
     echo "- = already indexed: \`$dest\`" >>"$out/summary.md"
     continue
   fi

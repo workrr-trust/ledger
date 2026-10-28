@@ -35,15 +35,18 @@ since=$(jq -nr --argjson d "$days" 'now - $d * 86400 | todate')
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+# certificates/ and findings/ aren't checked out (they grow with every record): what is
+# indexed comes from git's tree, and each record's source and level from index/.
+git ls-tree -r --name-only HEAD -- certificates findings >"$work/indexed"
+indexed() { grep -qxF "$1" "$work/indexed"; }
 
 {
   sed -e 's/#.*//' -e 's/[[:space:]]//g' sources.txt 2>/dev/null || true
-  for f in certificates/sha256/*/*.sigstore.json; do
-    [ -e "$f" ] || continue
-    # Public scans name the scanned repo, but their certificates live in workrr-trust/certify
-    # (listed in sources.txt), so they don't make that repo a watched one.
-    jq -r '.dsseEnvelope.payload' "$f" | base64 -d | jq -r 'select(.predicate.level != "scanned") | .predicate.source.uri // empty'
-  done | sed 's|^https://github.com/||'
+  # Public scans name the scanned repo, but their certificates live in workrr-trust/certify
+  # (listed in sources.txt), so they don't make that repo a watched one.
+  find index -name '*.jsonl' -exec cat {} + 2>/dev/null |
+    jq -r 'select(.kind == "certificate" and .level != "scanned") | .source.uri // empty' |
+    sed 's|^https://github.com/||'
 } | awk 'NF' | sort -fu >"$work/repos"
 
 : >"$work/pairs"
@@ -75,7 +78,7 @@ sort -u "$work/pairs" | while read -r repo digest; do
   for idx in $(jq -r --arg pt "$predicate_type" '.attestations[].bundle
       | select((.dsseEnvelope.payload | @base64d | fromjson | .predicateType) == $pt)
       | .verificationMaterial.tlogEntries[0].logIndex' "$work/att.json" 2>/dev/null | grep -E '^[0-9]{1,20}$'); do
-    if [ -e "certificates/sha256/$digest/$idx.sigstore.json" ]; then
+    if indexed "certificates/sha256/$digest/$idx.sigstore.json"; then
       echo "  $repo sha256:${digest:0:12}: Rekor $idx already indexed"
     else
       echo "  $repo sha256:${digest:0:12}: Rekor $idx is new"
@@ -84,7 +87,7 @@ sort -u "$work/pairs" | while read -r repo digest; do
   done
   # The GitLab witness's certificates are found through Rekor (scripts/witness.sh).
   for idx in $(bash scripts/witness.sh "$digest" 2>/dev/null || true); do
-    if [ ! -e "certificates/sha256/$digest/$idx.sigstore.json" ]; then
+    if ! indexed "certificates/sha256/$digest/$idx.sigstore.json"; then
       echo "  $repo sha256:${digest:0:12}: GitLab witness Rekor $idx is new"
       pending=1
     fi
@@ -115,7 +118,7 @@ if gh api "repos/$OBSERVER_STORE/actions/workflows/scan.yml/runs?status=complete
         | [(if .predicateType == $ct then "certificates" elif .predicateType == $ft then "findings" else empty end), .digest, (.logIndex | tostring)]
         | @tsv' 2>/dev/null |
       while IFS=$'\t' read -r kind digest idx; do
-        [ -e "$kind/sha256/$digest/$idx.sigstore.json" ] || echo "$OBSERVER_STORE sha256:$digest"
+        indexed "$kind/sha256/$digest/$idx.sigstore.json" || echo "$OBSERVER_STORE sha256:$digest"
       done >>"$work/new" || true
   done <"$work/runs"
 else
