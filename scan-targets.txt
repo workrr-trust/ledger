@@ -2,7 +2,8 @@
 # workrr-trust/certify's watch.yml reads this file hourly and dispatches scan.yml
 # for any target whose path has a new commit (docs/findings.md in that repo).
 # Seeded 2026-10-28 from workrr's October scan of public agent artifacts, most
-# starred repos first. Add targets by pull request; there is no opt-out list.
+# starred repos first. Add targets at https://skills.workrr.ai (checked and appended by
+# .github/workflows/add-targets.yml) or by pull request; there is no opt-out list.
 morluto/rea .
 morluto/rea website
 anthropics/skills skills/academy-guide
@@ -75799,3 +75800,4 @@ skillhq/telegram .
 shadowcz007/skills skills/qq-email
 seefreed/skills en-to-zh-translator
 jerrar670/surf-website .agent/skills/implement_lenis_scroll
+openai/skills skills/.curated/openai-docs
