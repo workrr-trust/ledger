@@ -179,7 +179,23 @@ jobs:
             /*
             !/certificates/
             !/findings/
+      # GitHub's artifact store fails a download now and then ("failed after 5 retries").
+      # Try again a minute later; if that fails too, a discover run leaves the records for
+      # the next one (discover looks back 3 days and skips what's indexed), so only a
+      # submission (an issue, which gets a reply) fails the job.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: dl
+        continue-on-error: true
+        with:
+          name: ${{ needs.verify.outputs.artifact || 'ingest' }}
+          path: ${{ runner.temp }}/out
+      - name: Wait before retrying the download
+        if: steps.dl.outcome == 'failure'
+        run: sleep 60
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        id: dl2
+        if: steps.dl.outcome == 'failure'
+        continue-on-error: true
         with:
           name: ${{ needs.verify.outputs.artifact || 'ingest' }}
           path: ${{ runner.temp }}/out
@@ -189,7 +205,14 @@ jobs:
           REPO: ${{ needs.verify.outputs.repository }}
           DIGEST: ${{ needs.verify.outputs.digest }}
           ARTIFACT: ${{ needs.verify.outputs.artifact }}
+          DOWNLOADED: ${{ steps.dl.outcome == 'success' || steps.dl2.outcome == 'success' }}
+          EVENT: ${{ github.event_name }}
         run: |
+          if [ "$DOWNLOADED" != true ]; then
+            [ "$EVENT" != issues ] || { echo "::error::could not download the verified records"; exit 1; }
+            echo "::warning::could not download the verified records; the next discover run picks them up"
+            exit 0
+          fi
           cd "$RUNNER_TEMP/out"
           mapfile -t files < <(find certificates findings -type f 2>/dev/null | sort)
           cd "$GITHUB_WORKSPACE"
