@@ -130,10 +130,21 @@ jobs:
           check "monitor (Rekor checkpoint)" "$(last_run monitor.yml)" 30
           check "clock Worker dispatch" "$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/monitor.yml/runs?event=workflow_dispatch&per_page=1" --jq '.workflow_runs[0].created_at // empty')" 30
           check "identity-watch (CT log)" "$(last_run identity-watch.yml)" 90
+          # GitLab and Codeberg rate-limit shared runner addresses (HTTP 429). Retry with
+          # backoff; if the API still can't be read, say so without failing: an unreadable
+          # API isn't a stale copy, and the clock checks both copies every 5 minutes.
+          remote() { # <label> <url> <jq filter> <max minutes>
+            local body
+            if body=$(curl -fsS --retry 4 --retry-all-errors --retry-delay 15 --max-time 30 "$2"); then
+              check "$1" "$(jq -r "$3" <<<"$body")" "$4"
+            else
+              echo "::warning::$1: API unavailable, not checked this run"
+            fi
+          }
           gl=https://gitlab.com/api/v4/projects/workrr-trust%2Fledger
-          check "GitLab mirror head" "$(curl -fsS "$gl/repository/branches/main" | jq -r .commit.committed_date)" 720
-          check "GitLab witness pipeline" "$(curl -fsS "$gl/pipelines?status=success&per_page=1" | jq -r '.[0].updated_at // empty')" 720
-          check "Codeberg mirror head" "$(curl -fsS https://codeberg.org/api/v1/repos/workrr-trust/ledger/branches/main | jq -r .commit.timestamp)" 720
+          remote "GitLab mirror head" "$gl/repository/branches/main" .commit.committed_date 720
+          remote "GitLab witness pipeline" "$gl/pipelines?status=success&per_page=1" '.[0].updated_at // empty' 720
+          remote "Codeberg mirror head" https://codeberg.org/api/v1/repos/workrr-trust/ledger/branches/main .commit.timestamp 720
           exit $fail
       - name: Open or update the canary issue
         if: failure()

@@ -157,7 +157,20 @@ jobs:
           month="identities/$(date -u +%Y-%m).jsonl"
           files=("$CURSOR" "$TAGS")
           [ -f "$month" ] && files+=("$month")
-          bash scripts/commit.sh "identity-watch: CT log through tree size $(jq -r .tree_size "$CURSOR")" "${files[@]}"
+          ours=$(jq -r .tree_size "$CURSOR")
+          if ! bash scripts/commit.sh "identity-watch: CT log through tree size $ours" "${files[@]}"; then
+            # Another identity-watch run (the hourly backstop and the clock's dispatch can
+            # overlap) may have committed first. commit.sh only ever moves the cursor along
+            # an unbroken chain, so if main's cursor is already at or past ours, every entry
+            # this run read was read and committed by that run too: nothing is lost.
+            git fetch --quiet origin main
+            theirs=$(git show "FETCH_HEAD:$CURSOR" | jq -r .tree_size)
+            if [ "$theirs" -ge "$ours" ]; then
+              echo "Superseded: main's CT position $theirs already covers ours ($ours)."
+            else
+              exit 1
+            fi
+          fi
       - name: Note a new certifier tag
         if: steps.tags.outputs.new == 'true'
         env:
