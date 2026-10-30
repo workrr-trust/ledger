@@ -42,8 +42,8 @@ on:
 permissions: {}
 
 env:
-  # workrr-trust/certify v0.1.10 (verify-finding, ruleset v0.2; scan.yml observer at v0.1.4 to v0.1.10; GitLab witness v0.1.7 to v0.1.10)
-  CERTIFY_SHA: b20bff30d84ba48585517508829c45145b5d57b4
+  # workrr-trust/certify v0.1.11 (verify-finding, ruleset v0.2; scan.yml observer at v0.1.4 to v0.1.11; GitLab witness v0.1.7 to v0.1.11)
+  CERTIFY_SHA: 02a9d67785f8cc30272adf61715dce07baae1161
 
 jobs:
   verify:
