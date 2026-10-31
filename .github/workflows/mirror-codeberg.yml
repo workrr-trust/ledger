@@ -112,7 +112,16 @@ jobs:
               exit 1
             fi
           fi
-          git_cb push "$CODEBERG_REPO" "$local_tip:refs/heads/main" || unreachable
+          # Push in steps of at most 50 commits: Codeberg's proxy times out (504) after
+          # about 60s, so one push of a large backlog fails every time and the backlog
+          # only grows. Each step is a fast-forward, and a failed step leaves Codeberg
+          # at the last one that landed, so the next run carries on from there.
+          range=${remote_tip:+$remote_tip..}$local_tip
+          steps=$(git rev-list --first-parent --reverse "$range" | awk 'NR % 50 == 0')
+          for step in $steps $local_tip; do
+            git_cb push "$CODEBERG_REPO" "$step:refs/heads/main" || unreachable
+            echo "Mirrored $step"
+          done
           echo "Mirrored $local_tip to $CODEBERG_REPO"
       - name: Ask Software Heritage to archive Codeberg mirror
         if: steps.secret.outputs.configured == 'true'
