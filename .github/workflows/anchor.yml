@@ -76,11 +76,13 @@ jobs:
           fi
           printf '%s\n' "${changed[@]}"
           bash scripts/commit.sh "anchor: OpenTimestamps $(date -u +%Y-%m-%d)" "${changed[@]}"
-      - name: Ask Software Heritage to archive the ledger
+      - name: Ask Software Heritage to archive the ledger and its GitLab copy
         # Best effort: anonymous Save Code Now, rate-limited; SWH also crawls on its own.
         continue-on-error: true
         env:
           ORIGIN: ${{ github.server_url }}/${{ github.repository }}
         run: |
-          curl -fsS -X POST "https://archive.softwareheritage.org/api/1/origin/save/git/url/$ORIGIN/" |
-            jq '{save_request_status, save_task_status, origin_url}'
+          for origin in "$ORIGIN" https://gitlab.com/workrr-trust/ledger; do
+            curl -fsS -X POST "https://archive.softwareheritage.org/api/1/origin/save/git/url/$origin/" |
+              jq '{save_request_status, save_task_status, origin_url}' || true
+          done

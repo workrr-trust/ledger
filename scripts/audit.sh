@@ -3,7 +3,7 @@
 # files' cryptography: keys come from the Sigstore trusted root via TUF.
 #
 #   bash scripts/audit.sh            # checkpoints + certificates
-#   MIRRORS="https://gitlab.com/workrr-trust/ledger.git https://codeberg.org/workrr-trust/ledger.git" bash scripts/audit.sh
+#   MIRRORS="https://gitlab.com/workrr-trust/ledger.git" bash scripts/audit.sh
 #
 # Needs: go, git, jq. Builds tools/ckpt and the workrr CLI (pinned release).
 set -euo pipefail
@@ -53,7 +53,7 @@ for f in certificates/sha256/*/*.sigstore.json; do
 done
 echo "   $count certificate(s), $fails failure(s)"
 
-DEFAULT_MIRRORS="https://gitlab.com/workrr-trust/ledger.git https://codeberg.org/workrr-trust/ledger.git"
+DEFAULT_MIRRORS="https://gitlab.com/workrr-trust/ledger.git"
 MIRRORS=${MIRRORS:-$DEFAULT_MIRRORS}
 
 if [ -n "$MIRRORS" ]; then

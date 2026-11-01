@@ -31,7 +31,7 @@ any single host. The design is in
 | `index/YYYY/MM/DD/*.jsonl` | One immutable file per ingest batch, one JSON line per certificate or finding it added (digest, Rekor index, level, source, signer). Sites read these instead of every bundle. |
 | `scan-targets.txt` | Public repos and paths that workrr-trust/certify's `watch.yml` follows and re-scans when the path changes. Add targets by pull request; there is no opt-out list. |
 | `scripts/` | `audit.sh` (check everything), `discover.sh` (find unindexed certificates), `ingest.sh` (verify one repo + digest), `commit.sh` (signed commits through the GitHub API). |
-| `.github/workflows/` | `monitor` (every 5 min), `anchor` (daily), `discover` (every 5 min), `ingest` (per submission or discovery), `identity-watch` (every 15 min), `canary` (hourly), `mirror-codeberg` (push & 6-hourly fast-forward to Codeberg). |
+| `.github/workflows/` | `monitor` (every 5 min), `anchor` (daily), `discover` (every 5 min), `ingest` (per submission or discovery), `identity-watch` (every 15 min), `canary` (hourly). |
 | `mirror/gitlab-ci.yml` | The GitLab mirror's fast-forward-only sync job. |
 
 ## Audit it
@@ -189,16 +189,16 @@ A watcher that silently stops is worse than none. `canary` runs hourly:
   verifiers, the Go CLI and the npm CLI. Then it changes one byte of each artifact, and
   both verifiers must reject it.
 - It checks that every watcher reported recently: `monitor` and a clock-dispatched run
-  within 30 minutes, `identity-watch` within 90, and the GitLab mirror, GitLab witness
-  and Codeberg mirror within 12 hours.
+  within 30 minutes, `identity-watch` within 90, and the GitLab mirror and GitLab
+  witness within 12 hours.
 
 Any failure opens a `canary` issue, and the next clean run closes it.
 
 ## Mirrors and archives
 
 The mirrors are a durability layer, not the source of truth. Truth is the signatures and
-proofs inside the files. Software Heritage is asked to archive the repo daily (Save Code
-Now, from `anchor`). It keeps every snapshot it takes, so even a rewritten history leaves
+proofs inside the files. Software Heritage is asked to archive the repo and its GitLab copy
+daily (Save Code Now, from `anchor`). It keeps every snapshot it takes, so even a rewritten history leaves
 evidence. These steps need accounts workrr has to create by hand:
 
 ### GitLab (an independent witness: fast-forward only)
@@ -222,29 +222,12 @@ evidence. These steps need accounts workrr has to create by hand:
 7. **Build → Pipeline schedules → New schedule**: `0 */6 * * *`, target branch `main`.
    Run it once by hand and check it goes green.
 8. ✓ Done 2026-10-19: live at [gitlab.com/workrr-trust/ledger](https://gitlab.com/workrr-trust/ledger),
-   schedule green, and added to `MIRRORS` in the audit example above. A Software Heritage
-   save for it will be requested by hand (workrr), at
-   [archive.softwareheritage.org/save](https://archive.softwareheritage.org/save/).
+   schedule green, and added to `MIRRORS` in the audit example above. `anchor` asks
+   Software Heritage to archive it daily, with the GitHub repo.
 
 If GitHub's history were ever rewritten, the job would fail and GitLab would keep the
 original.
 
-### Codeberg (non-profit mirror; fast-forward push + durability)
-
-1. Create a codeberg.org account for workrr, and turn on 2FA. Codeberg is for free and
-   open-source projects, which this is.
-2. Create the organization **`workrr-trust`** (codeberg.org/org/create), visibility public.
-3. Create the public repository **`workrr-trust/ledger`** on Codeberg.
-4. Generate an access token with repository write scope on `workrr-trust/ledger` and save
-   it as the **`CODEBERG_TOKEN`** repository secret in `github.com/workrr-trust/ledger`.
-   `.github/workflows/mirror-codeberg.yml` pushes `main` fast-forward on every commit (and
-   skips cleanly if `CODEBERG_TOKEN` is not set).
-5. `scripts/audit.sh` checks both `https://gitlab.com/workrr-trust/ledger.git` and
-   `https://codeberg.org/workrr-trust/ledger.git` by default.
-
-Forgejo pull mirrors follow upstream force-pushes, so Codeberg is a copy, not a witness.
-The fast-forward-only witnesses are GitLab and Software Heritage's snapshots. Codeberg
-can't sign either: public Sigstore Fulcio doesn't trust Codeberg's OIDC issuer yet.
 
 ## Limits
 
