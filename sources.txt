@@ -7,3 +7,4 @@ workrr-trust/sample-skills
 workrr-trust/certify
 openai/skills
 InkRoom-AI/inkroom-prompts
+InkRoom-AI/inkroom-client
