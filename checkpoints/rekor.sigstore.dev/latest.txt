@@ -1,1 +1,1 @@
-rekor.sigstore.dev - 1193050959916656506\n3909301861\naAIm4EevnZNRNHqQmeXspwqYmNCFNij3TrIevItqp/M=\n\n— rekor.sigstore.dev wNI9ajBGAiEA7wMWO0MzdEvcFMyFcvpGFlLBHfIxozPNJnfIneqqdwMCIQCn2gNQxwdJ50TZ2e2o4zR2XOB9kq0h281h/PlbTE8e7w==\n
+rekor.sigstore.dev - 1193050959916656506\n3909310611\nUIwZAz849Mr7ZPvt7xZp89R1RlulJYxx40edSIDJ+qU=\n\n— rekor.sigstore.dev wNI9ajBEAiBWqow8wo8ByFnD2T029IJ0zyREqQwsOHblG3u8Yjm7XQIgCNMojFS340jEf0yMmFzNQta9ZBEwnLgQKcZyRtUD00Q=\n
