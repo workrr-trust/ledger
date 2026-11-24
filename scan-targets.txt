@@ -75806,3 +75806,4 @@ InkRoom-AI/inkroom-client skills/inkroom
 InkRoom-AI/inkroom-client skills/inkroom-prompt-reverse
 InkRoom-AI/inkroom-prompts .
 email-marketing-skills-hub/email-marketing-skills .
+moonlitnayeem/fairvalid-ai skills/email-verification

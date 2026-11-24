@@ -9,3 +9,4 @@ openai/skills
 InkRoom-AI/inkroom-prompts
 InkRoom-AI/inkroom-client
 email-marketing-skills-hub/email-marketing-skills
+moonlitnayeem/fairvalid-ai
